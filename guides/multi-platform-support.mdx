@@ -1,0 +1,601 @@
+---
+title: 'Multi-Platform Support'
+description: 'Configure and scrape followers from Instagram, TikTok, Threads, and X (Twitter) with platform-specific optimizations'
+---
+
+The Click Creators Scraper Server supports scraping follower data from multiple social media platforms using Apify actors. Each platform has unique API requirements, data structures, and configuration needs.
+
+## Supported Platforms
+
+<CardGroup cols={2}>
+  <Card title="Instagram" icon="instagram">
+    Default platform with full gender filtering and profile data
+  </Card>
+  <Card title="TikTok" icon="tiktok">
+    Supports follower scraping with unique ID handling
+  </Card>
+  <Card title="Threads" icon="threads">
+    Meta's text-based platform (Instagram-like API)
+  </Card>
+  <Card title="X (Twitter)" icon="x-twitter">
+    Follower/following scraping with simplified data model
+  </Card>
+</CardGroup>
+
+## Platform Configuration
+
+Each platform requires a specific Apify actor ID configured via environment variables:
+
+### Environment Variables
+
+```bash .env
+# Legacy Instagram support (backward compatible)
+APIFY_API_KEY=apify_api_XXXXXXXXXXXXXXXXXXXXXXXX
+APIFY_ACTOR_ID=your-instagram-actor-id
+
+# Platform-specific actors (recommended)
+INSTAGRAM_APIFY_ACTOR_ID=instagram-actor-id
+TIKTOK_APIFY_ACTOR_ID=tiktok-actor-id
+THREADS_APIFY_ACTOR_ID=threads-actor-id
+X_APIFY_ACTOR_ID=twitter-actor-id
+```
+
+<Info>
+  If `INSTAGRAM_APIFY_ACTOR_ID` is not set, the system falls back to the legacy `APIFY_ACTOR_ID` for Instagram scraping.
+</Info>
+
+### Actor ID Resolution
+
+The `get_actor_id_for_platform` function handles platform-to-actor mapping:
+
+```python utils/scraper.py
+def get_actor_id_for_platform(platform: str = 'instagram') -> str:
+    """
+    Get the appropriate Apify actor ID for the specified platform.
+    """
+    platform = platform.lower()
+    
+    platform_env_map = {
+        'instagram': 'INSTAGRAM_APIFY_ACTOR_ID',
+        'threads': 'THREADS_APIFY_ACTOR_ID',
+        'tiktok': 'TIKTOK_APIFY_ACTOR_ID',
+        'x': 'X_APIFY_ACTOR_ID'
+    }
+    
+    # Fallback to legacy APIFY_ACTOR_ID for Instagram
+    if platform == 'instagram':
+        actor_id = os.getenv('INSTAGRAM_APIFY_ACTOR_ID') or os.getenv('APIFY_ACTOR_ID')
+    elif platform in platform_env_map:
+        actor_id = os.getenv(platform_env_map[platform])
+    else:
+        # Unknown platform - default to Instagram actor
+        logger.warning(f"Unknown platform '{platform}', defaulting to Instagram")
+        actor_id = os.getenv('INSTAGRAM_APIFY_ACTOR_ID') or os.getenv('APIFY_ACTOR_ID')
+    
+    if not actor_id:
+        raise ValueError(
+            f"Apify actor ID not configured for platform '{platform}'. "
+            f"Please set {platform_env_map.get(platform, 'APIFY_ACTOR_ID')} environment variable."
+        )
+    
+    return actor_id
+```
+
+## Platform-Specific API Calls
+
+### Making Scrape Requests
+
+Specify the platform in your API request:
+
+<Tabs>
+  <Tab title="Instagram">
+    ```bash
+    curl -X POST https://your-server.com/api/scrape-followers \
+      -H "Content-Type: application/json" \
+      -H "X-Base-Id: appXYZ123ABC" \
+      -d '{
+        "accounts": ["nike", "adidas"],
+        "platform": "instagram",
+        "targetGender": "male",
+        "totalScrapeCount": 100
+      }'
+    ```
+
+    **Response:**
+    ```json
+    {
+      "success": true,
+      "job_id": "uuid",
+      "platform": "instagram",
+      "message": "Instagram scraping job queued successfully."
+    }
+    ```
+  </Tab>
+
+  <Tab title="TikTok">
+    ```bash
+    curl -X POST https://your-server.com/api/scrape-followers \
+      -H "Content-Type: application/json" \
+      -H "X-Base-Id: appXYZ123ABC" \
+      -d '{
+        "accounts": ["charlidamelio", "khaby.lame"],
+        "platform": "tiktok",
+        "targetGender": "female",
+        "totalScrapeCount": 200
+      }'
+    ```
+
+    <Note>
+      TikTok usernames are automatically cleaned (@ prefix and URL parts removed).
+    </Note>
+  </Tab>
+
+  <Tab title="Threads">
+    ```bash
+    curl -X POST https://your-server.com/api/scrape-followers \
+      -H "Content-Type: application/json" \
+      -H "X-Base-Id: appXYZ123ABC" \
+      -d '{
+        "accounts": ["zuck", "instagram"],
+        "platform": "threads",
+        "targetGender": "male",
+        "totalScrapeCount": 150
+      }'
+    ```
+  </Tab>
+
+  <Tab title="X (Twitter)">
+    ```bash
+    curl -X POST https://your-server.com/api/scrape-followers \
+      -H "Content-Type: application/json" \
+      -H "X-Base-Id: appXYZ123ABC" \
+      -d '{
+        "accounts": ["elonmusk", "twitter"],
+        "platform": "x",
+        "targetGender": "male",
+        "totalScrapeCount": 100
+      }'
+    ```
+  </Tab>
+</Tabs>
+
+### Platform Validation
+
+The API validates platform names against a whitelist:
+
+```python api_async.py
+# From api_async.py:83-91
+platform = data.get('platform', 'Instagram').lower()
+
+# Validate platform
+valid_platforms = ['instagram', 'tiktok', 'threads', 'x']
+if platform not in valid_platforms:
+    return jsonify({
+        'success': False,
+        'error': f'Invalid platform "{platform}". Must be one of: {', '.join(valid_platforms)}'
+    }), 400
+```
+
+## Platform-Specific Input Formats
+
+Each Apify actor expects different input formats. The scraper handles this automatically:
+
+### Instagram
+
+```python
+run_input = {
+    "usernames": ["nike", "adidas"],
+    "max_count": 5
+}
+```
+
+### TikTok
+
+```python
+# Clean usernames: remove @ prefix and URL parts
+clean_usernames = []
+for username in accounts:
+    clean_username = username.strip()
+    if clean_username.startswith('@'):
+        clean_username = clean_username[1:]
+    if 'tiktok.com/' in clean_username:
+        clean_username = clean_username.split('tiktok.com/')[-1]
+        if clean_username.startswith('@'):
+            clean_username = clean_username[1:]
+    clean_usernames.append(clean_username)
+
+run_input = {
+    "usernames": clean_usernames,
+    "numFollowers": 5
+}
+```
+
+<Info>
+  TikTok accepts various username formats: `@username`, `username`, or full URLs like `https://www.tiktok.com/@username`
+</Info>
+
+### Threads
+
+```python
+run_input = {
+    "usernames": ["zuck", "instagram"],
+    "maxFollowers": 5
+}
+```
+
+### X (Twitter)
+
+```python
+run_input = {
+    "user_names": ["elonmusk", "twitter"],  # Note: 'user_names' not 'usernames'
+    "getFollowers": True,
+    "getFollowing": True,
+    "maxFollowers": 5,
+    "maxFollowings": 5
+}
+```
+
+<Warning>
+  X/Twitter actor uses `user_names` (with underscore) instead of `usernames` used by other platforms.
+</Warning>
+
+## Platform-Specific Data Structures
+
+Each platform returns different field names and structures. The scraper normalizes these into a common format:
+
+### Common Output Format
+
+All platforms are normalized to:
+
+```python
+{
+    'id': 'unique_identifier',
+    'username': 'username_or_handle',
+    'full_name': 'display_name_or_real_name',
+    'follower_count': 0,
+    'following_count': 0,
+    'posts_count': 0
+}
+```
+
+### Platform Field Mapping
+
+<Tabs>
+  <Tab title="Instagram">
+    ```python
+    follower_data = {
+        'id': row.get('id', row.get('username', '')),
+        'username': row.get('username', ''),
+        'full_name': row.get('full_name') or row.get('fullname', ''),
+        'follower_count': row.get('follower_count', 0),
+        'following_count': row.get('following_count', 0),
+        'posts_count': row.get('posts_count', 0)
+    }
+    ```
+
+    **Raw Apify Fields:**
+    - `username`: Instagram handle
+    - `full_name` / `fullname`: Display name
+    - `follower_count`: Follower count
+    - `following_count`: Following count
+    - `posts_count`: Number of posts
+    - `id`: Instagram user ID
+  </Tab>
+
+  <Tab title="TikTok">
+    ```python
+    follower_data = {
+        'id': str(row.get('id', '')),  # Primary unique identifier (numeric)
+        'username': row.get('uniqueId') or row.get('unique_id') or row.get('username', ''),
+        'full_name': row.get('nickname', ''),  # TikTok display name
+        'follower_count': row.get('followerCount') or row.get('follower_count') or row.get('followers', 0),
+        'following_count': row.get('followingCount') or row.get('following_count') or row.get('following', 0),
+        'posts_count': row.get('videoCount') or row.get('aweme_count') or row.get('videos', 0),
+        'signature': row.get('signature', ''),  # Bio
+        'region': row.get('region', ''),  # Country code (e.g., 'US', 'PK')
+        'sec_uid': row.get('secUid', ''),  # Secure user ID
+        'url': row.get('url', '')  # Profile URL
+    }
+    ```
+
+    **Raw Apify Fields:**
+    - `id`: Numeric user ID (primary identifier)
+    - `uniqueId` / `unique_id` / `username`: TikTok handle
+    - `nickname`: Display name
+    - `followerCount` / `follower_count` / `followers`: Follower count
+    - `followingCount` / `following_count` / `following`: Following count
+    - `videoCount` / `aweme_count` / `videos`: Video count
+    - `signature`: Bio/description
+    - `region`: Country code
+    - `secUid`: Secure identifier
+
+    <Note>
+      TikTok actors may return different field name formats depending on version. The scraper handles all variants.
+    </Note>
+  </Tab>
+
+  <Tab title="Threads">
+    ```python
+    follower_data = {
+        'id': row.get('id', row.get('username', '')),
+        'username': row.get('username', ''),
+        'full_name': row.get('full_name') or row.get('fullname', ''),
+        'follower_count': row.get('follower_count', 0),
+        'following_count': row.get('following_count', 0),
+        'posts_count': row.get('posts_count', 0)
+    }
+    ```
+
+    **Raw Apify Fields:**
+    Similar to Instagram (both are Meta platforms)
+  </Tab>
+
+  <Tab title="X (Twitter)">
+    ```python
+    follower_data = {
+        'id': str(row.get('id_str', row.get('id', ''))),  # X uses 'id_str'
+        'username': row.get('screen_name', ''),  # X uses 'screen_name'
+        'full_name': row.get('name', ''),  # X uses 'name' for display name
+        'follower_count': 0,  # Not scraped in basic mode
+        'following_count': 0,
+        'posts_count': 0
+    }
+    ```
+
+    **Raw Apify Fields:**
+    - `id_str`: String user ID (preferred over numeric `id`)
+    - `screen_name`: Twitter handle (@username)
+    - `name`: Display name
+
+    <Warning>
+      X/Twitter scraper uses a simplified data model. Follower/following counts are not included to reduce payload size and API quota usage.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Gender Detection Across Platforms
+
+Gender filtering works consistently across all platforms using the `full_name` field:
+
+```python
+# From tasks.py:148-152
+# Step 2: Detect gender
+followers_gender = detect_gender(followers)
+
+# Step 3: Filter by target gender
+filtered_followers = filter_by_gender(followers_gender, target_gender)
+```
+
+The gender detection algorithm:
+- Uses `full_name` for analysis (normalized across platforms)
+- Supports both "male" and "female" filters
+- Falls back to "unknown" for ambiguous names
+- Platform-agnostic (works the same for all platforms)
+
+<Note>
+  For TikTok, `full_name` maps to `nickname` (display name). For X, it maps to `name` (not `screen_name`).
+</Note>
+
+## Platform-Specific Retry Logic
+
+The scraper includes automatic retry with exponential backoff for all platforms:
+
+```python utils/scraper.py
+# From utils/scraper.py:154-200
+last_error = None
+for attempt in range(max_retries):  # Default: 3 attempts
+    try:
+        # Calculate backoff delay (0s, 2s, 8s)
+        if attempt > 0:
+            backoff_delay = 2 ** attempt
+            logger.info(f"Retry attempt {attempt + 1}/{max_retries} after {backoff_delay}s")
+            time.sleep(backoff_delay)
+        
+        # Call Apify actor
+        run = client.actor(actor_key).call(run_input=run_input)
+        
+        # Fetch results
+        data = []
+        for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+            data.append(item)
+        
+        break  # Success!
+        
+    except Exception as e:
+        last_error = e
+        error_msg = str(e).lower()
+        
+        # Handle specific error types
+        if 'rate limit' in error_msg or '429' in error_msg:
+            logger.warning(f"Rate limit hit (attempt {attempt + 1}/{max_retries})")
+            if attempt < max_retries - 1:
+                continue
+        elif 'connection' in error_msg or 'timeout' in error_msg:
+            logger.warning(f"Network error (attempt {attempt + 1}/{max_retries})")
+            if attempt < max_retries - 1:
+                continue
+        
+        # Last attempt failed
+        if attempt == max_retries - 1:
+            raise Exception(f"Failed after {max_retries} attempts: {last_error}")
+```
+
+## Data Storage
+
+All platform data is stored in the same tables with platform-specific fields:
+
+### Job Record
+
+```python
+# From api_async.py:138-151
+supabase.table('scrape_jobs').insert({
+    'job_id': job_id,
+    'status': 'queued',
+    'accounts': accounts,
+    'platform': platform,  # 'instagram', 'tiktok', 'threads', or 'x'
+    'target_gender': target_gender,
+    'max_count_per_account': per_account_count,
+    'base_id': base_id,
+    'created_at': datetime.now(timezone.utc).isoformat()
+}).execute()
+```
+
+### Result Records
+
+```python
+# From tasks.py:261-269
+records.append({
+    'job_id': job_id,
+    'profile_id': profile['id'],  # Platform-specific ID
+    'username': profile['username'],  # Normalized username
+    'full_name': profile.get('full_name', ''),  # Normalized display name
+    'created_at': datetime.now(timezone.utc).isoformat()
+})
+```
+
+<Info>
+  The same database schema works for all platforms thanks to field normalization in the scraper.
+</Info>
+
+## Airtable Integration
+
+The Airtable integration supports multi-platform data through the `platform` field:
+
+```python utils/airtable_creator.py
+# From airtable_creator.py:143-154
+{
+    "name": "platform",
+    "type": "singleSelect",
+    "description": "Social media platform",
+    "options": {
+        "choices": [
+            {"name": "instagram"},
+            {"name": "tiktok"},
+            {"name": "threads"},
+            {"name": "x"}
+        ]
+    }
+}
+```
+
+When syncing to Airtable, each profile includes its platform:
+
+```python
+{
+    "id": "123456789",
+    "username": "john_doe",
+    "full_name": "John Doe",
+    "platform": "tiktok",  # Platform identifier
+    "position": 1,
+    "campaign_date": "2026-03-14",
+    "progress_status": "pending"
+}
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Always specify platform explicitly" icon="list-check">
+    Even though Instagram is the default, explicitly specify the platform in every request for clarity:
+    
+    ```json
+    {"accounts": ["nike"], "platform": "instagram"}
+    ```
+  </Accordion>
+  
+  <Accordion title="Configure all platform actors" icon="gear">
+    Set up environment variables for all platforms you plan to use, even if you only use one initially:
+    
+    ```bash
+    INSTAGRAM_APIFY_ACTOR_ID=actor-id-1
+    TIKTOK_APIFY_ACTOR_ID=actor-id-2
+    THREADS_APIFY_ACTOR_ID=actor-id-3
+    X_APIFY_ACTOR_ID=actor-id-4
+    ```
+  </Accordion>
+  
+  <Accordion title="Handle platform-specific errors" icon="triangle-exclamation">
+    Different platforms have different rate limits and restrictions. Monitor error messages and adjust retry logic accordingly.
+  </Accordion>
+  
+  <Accordion title="Normalize data early" icon="code-merge">
+    The scraper normalizes platform data automatically, but if you extend the system, ensure new fields follow the common format.
+  </Accordion>
+  
+  <Accordion title="Test with small batches first" icon="flask">
+    When adding a new platform, test with 1-2 accounts and low follower counts before scaling up:
+    
+    ```json
+    {
+      "accounts": ["test_account"],
+      "platform": "tiktok",
+      "totalScrapeCount": 10
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+### Platform Not Configured
+
+**Error:**
+```json
+{
+  "success": false,
+  "error": "Apify actor ID not configured for platform 'tiktok'. Please set TIKTOK_APIFY_ACTOR_ID environment variable."
+}
+```
+
+**Solution:** Add the missing environment variable to your `.env` file and restart the server.
+
+### Invalid Platform
+
+**Error:**
+```json
+{
+  "success": false,
+  "error": "Invalid platform 'facebook'. Must be one of: instagram, tiktok, threads, x"
+}
+```
+
+**Solution:** Use only supported platforms: `instagram`, `tiktok`, `threads`, or `x`.
+
+### TikTok Username Cleaning Issues
+
+**Problem:** TikTok usernames with @ or URLs not working
+
+**Solution:** The scraper automatically cleans TikTok usernames. You can provide any format:
+- `@username` → cleaned to `username`
+- `https://www.tiktok.com/@username` → cleaned to `username`
+- `username` → remains `username`
+
+### X/Twitter Field Mapping
+
+**Problem:** X/Twitter profiles have null values for follower counts
+
+**Solution:** This is expected. The X scraper uses a simplified data model to reduce API quota usage:
+```python
+{
+    'follower_count': 0,  # Not scraped
+    'following_count': 0,  # Not scraped
+    'posts_count': 0      # Not scraped
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Scraping Workflow" icon="diagram-project" href="/guides/scraping-workflow">
+    Learn the complete scraping workflow
+  </Card>
+  <Card title="Job Tracking" icon="chart-line" href="/guides/job-tracking">
+    Monitor multi-platform scraping jobs
+  </Card>
+  <Card title="Batch Processing" icon="layer-group" href="/guides/batch-processing">
+    Optimize data insertion for all platforms
+  </Card>
+  <Card title="Airtable Integration" icon="table" href="/guides/airtable-integration">
+    Sync multi-platform data to Airtable
+  </Card>
+</CardGroup>

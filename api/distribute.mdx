@@ -1,0 +1,160 @@
+---
+title: 'Distribute Campaign'
+description: 'Distribute campaign profiles to VA tables with random assignment'
+---
+
+## POST /api/distribute/:campaign_id
+
+Distribute campaign profiles to VA tables. Fetches unassigned profiles from a campaign, shuffles them randomly, and assigns them to VA tables with sequential positions.
+
+### URL Parameters
+
+<ParamField path="campaign_id" type="string" required>
+  UUID of the campaign to distribute
+</ParamField>
+
+### Headers
+
+<ParamField header="X-Base-Id" type="string" required>
+  Airtable base ID for multi-tenant isolation (format: `appXXXXXXXXXX`)
+</ParamField>
+
+### Request Body
+
+<ParamField body="profiles_per_table" type="number">
+  Number of profiles to assign per VA table. Should match client's `NEXT_PUBLIC_PROFILES_PER_TABLE`. Defaults to 180 if not provided.
+</ParamField>
+
+<ParamField body="base_id" type="string">
+  Alternative way to pass base_id (if not using header)
+</ParamField>
+
+### Response
+
+<ResponseField name="success" type="boolean" required>
+  Whether the distribution completed successfully
+</ResponseField>
+
+<ResponseField name="campaign_id" type="string" required>
+  UUID of the distributed campaign
+</ResponseField>
+
+<ResponseField name="base_id" type="string" required>
+  Base ID used for the operation
+</ResponseField>
+
+<ResponseField name="va_tables" type="number" required>
+  Number of VA tables used in the distribution
+</ResponseField>
+
+<ResponseField name="assigned_per_table" type="number" required>
+  Target number of profiles assigned per table
+</ResponseField>
+
+<ResponseField name="total_distributed" type="number" required>
+  Total number of profiles successfully distributed
+</ResponseField>
+
+<ResponseField name="total_available" type="number" required>
+  Total number of profiles that were available for distribution
+</ResponseField>
+
+### Example Request
+
+```bash
+curl -X POST https://api.example.com/api/distribute/550e8400-e29b-41d4-a716-446655440000 \
+  -H "Content-Type: application/json" \
+  -H "X-Base-Id: appABC123XYZ456" \
+  -d '{
+    "profiles_per_table": 180
+  }'
+```
+
+### Example Response
+
+```json
+{
+  "success": true,
+  "campaign_id": "550e8400-e29b-41d4-a716-446655440000",
+  "base_id": "appABC123XYZ456",
+  "va_tables": 80,
+  "assigned_per_table": 180,
+  "total_distributed": 14400,
+  "total_available": 14400
+}
+```
+
+### Error Responses
+
+#### Campaign Not Found
+
+```json
+{
+  "success": false,
+  "error": "Campaign 550e8400-e29b-41d4-a716-446655440000 not found for base_id=appABC123XYZ456"
+}
+```
+
+#### No Unassigned Profiles
+
+```json
+{
+  "success": false,
+  "error": "No unassigned profiles found for this campaign. Already distributed?"
+}
+```
+
+#### Invalid Configuration
+
+```json
+{
+  "success": false,
+  "error": "profiles_per_table must be a positive integer"
+}
+```
+
+## Distribution Algorithm
+
+### Process Flow
+
+1. **Fetch Unassigned**: Retrieves all profiles with `va_table_number=0` for the campaign
+2. **Shuffle**: Randomly shuffles profiles to ensure fair distribution
+3. **Sequential Assignment**: Assigns profiles to tables sequentially:
+   - Table 1: positions 1-180
+   - Table 2: positions 1-180
+   - Table N: positions 1-180
+4. **Update Database**: Updates each assignment with `va_table_number` and `position`
+
+### Example Distribution
+
+For 14,400 profiles across 80 VA tables (180 profiles/table):
+
+```
+Table 01: Profiles 1-180   (positions 1-180)
+Table 02: Profiles 181-360 (positions 1-180)
+Table 03: Profiles 361-540 (positions 1-180)
+...
+Table 80: Profiles 14221-14400 (positions 1-180)
+```
+
+### Dynamic Table Count
+
+The number of VA tables is determined dynamically from:
+1. Database configuration (preferred)
+2. Airtable base metadata (fallback)
+
+This allows different tenants to have different VA table counts.
+
+<Note>
+  Profiles are only distributed once per campaign. Calling this endpoint again on the same campaign will return an error if no unassigned profiles remain.
+</Note>
+
+<Warning>
+  Always provide `profiles_per_table` that matches your client configuration (`NEXT_PUBLIC_PROFILES_PER_TABLE`). Mismatched values can cause sync issues with the frontend.
+</Warning>
+
+## Next Steps
+
+After distribution completes:
+1. Call `/api/airtable-sync/:campaign_id` to push assignments to Airtable
+2. VAs can begin processing profiles in their assigned tables

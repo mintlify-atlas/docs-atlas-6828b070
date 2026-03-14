@@ -1,0 +1,697 @@
+---
+title: Error Tracking
+description: Error monitoring, tracking, and resolution with Sentry integration
+---
+
+## Error Tracking and Monitoring
+
+The scraper server includes built-in error tracking with Sentry integration for production monitoring.
+
+## Sentry Integration
+
+### Configuration
+
+From `app.py:61-74`, Sentry is automatically configured if the DSN is set:
+
+```python
+if os.getenv('SENTRY_DSN'):
+    sentry_sdk.init(
+        dsn=os.getenv('SENTRY_DSN'),
+        integrations=[
+            FlaskIntegration(),
+            CeleryIntegration()
+        ],
+        traces_sample_rate=0.1,  # 10% performance monitoring
+        environment=os.getenv('FLASK_ENV', 'development'),
+        release=os.getenv('APP_VERSION', '1.0.0')
+    )
+```
+
+### Setup Sentry
+
+<Steps>
+  <Step title="Create Sentry Account">
+    1. Sign up at [sentry.io](https://sentry.io)
+    2. Create a new Python project
+    3. Copy the DSN from project settings
+  </Step>
+  
+  <Step title="Configure Environment">
+    ```bash
+    # Set DSN
+    heroku config:set SENTRY_DSN=https://xxx@sentry.io/xxx
+    
+    # Set environment identifier
+    heroku config:set FLASK_ENV=production
+    
+    # Set release version (optional)
+    heroku config:set APP_VERSION=1.2.0
+    ```
+  </Step>
+  
+  <Step title="Restart Application">
+    ```bash
+    heroku restart
+    ```
+  </Step>
+  
+  <Step title="Verify Integration">
+    ```bash
+    # Check logs for confirmation
+    heroku logs | grep "Sentry"
+    
+    # Expected output:
+    # Sentry error tracking initialized
+    ```
+  </Step>
+</Steps>
+
+### Sentry Features
+
+**Automatic Error Capture:**
+- All unhandled exceptions in Flask routes
+- All Celery task failures
+- Background worker crashes
+- Database connection errors
+
+**Performance Monitoring:**
+- 10% of transactions tracked (configurable via `traces_sample_rate`)
+- API endpoint response times
+- Database query performance
+- Task execution duration
+
+<Info>
+  The `traces_sample_rate=0.1` means 10% of requests are sampled for performance monitoring to reduce overhead and costs.
+</Info>
+
+## Error Types and Handling
+
+### API Errors
+
+<Accordion title="400 Bad Request Errors">
+
+**Common Causes:**
+
+From `app.py:529-532`, missing required fields:
+
+```python
+if not data or 'accounts' not in data:
+    return jsonify({
+        'success': False,
+        'error': 'Missing "accounts" field in request body'
+    }), 400
+```
+
+**Error Response Format:**
+
+```json
+{
+  "success": false,
+  "error": "Missing 'accounts' field in request body"
+}
+```
+
+**Other 400 Errors:**
+- Invalid `base_id` format (`app.py:653-657`)
+- Empty accounts list (`app.py:539-543`)
+- Invalid `totalScrapeCount` (`app.py:547-551`)
+- Invalid `profiles_per_table` (`app.py:786-792`)
+
+</Accordion>
+
+<Accordion title="404 Not Found Errors">
+
+**Campaign Not Found:**
+
+From `app.py:992-996`:
+
+```python
+if not campaign.data or len(campaign.data) == 0:
+    return jsonify({
+        'success': False,
+        'error': f'Campaign {campaign_id} not found for base_id={base_id}'
+    }), 404
+```
+
+**Common Scenarios:**
+- Campaign ID doesn't exist
+- Campaign belongs to different `base_id`
+- Campaign was deleted
+
+**Debug:**
+
+```sql
+-- Check if campaign exists
+SELECT campaign_id, base_id, campaign_date, status
+FROM campaigns
+WHERE campaign_id = 'your-campaign-id';
+```
+
+</Accordion>
+
+<Accordion title="500 Internal Server Errors">
+
+**Automatic Sentry Reporting:**
+
+All 500 errors are automatically sent to Sentry with full stack trace.
+
+**Common Sources:**
+
+From `app.py:583-588`:
+
+```python
+except Exception as e:
+    print(f"Error processing request: {str(e)}")
+    return jsonify({
+        'success': False,
+        'error': str(e)
+    }), 500
+```
+
+**Debug Steps:**
+
+```bash
+# 1. Check Sentry for stack trace
+# 2. Review recent deployments
+git log -1
+
+# 3. Check for recent config changes
+heroku releases
+
+# 4. View detailed logs
+heroku logs --tail | grep ERROR
+```
+
+</Accordion>
+
+### Task Errors
+
+<Accordion title="Task Retry Logic">
+
+From `tasks.py:88-95`, all tasks inherit retry behavior:
+
+```python
+class BaseTask(Task):
+    autoretry_for = (Exception,)
+    retry_kwargs = {'max_retries': 3}
+    retry_backoff = True
+    retry_backoff_max = 600  # 10 minutes
+    retry_jitter = True
+```
+
+**Retry Schedule:**
+- Attempt 1: Immediate
+- Attempt 2: ~2-4 seconds (with jitter)
+- Attempt 3: ~8-16 seconds (with jitter)
+- Attempt 4: ~32-64 seconds (with jitter)
+- Max backoff: 10 minutes
+
+**Monitor Retries:**
+
+```bash
+heroku logs --tail --dyno worker | grep "Retry\|retry"
+```
+
+</Accordion>
+
+<Accordion title="SoftTimeLimitExceeded">
+
+**Time Limits:**
+
+From `celery_config.py:43-44`:
+
+```python
+task_time_limit=7200,       # 2 hours hard limit
+task_soft_time_limit=6900,  # 1h 55m soft limit
+```
+
+**What Happens:**
+- At 1h 55m: `SoftTimeLimitExceeded` raised
+- Task can catch and cleanup
+- At 2h: Task forcefully killed
+
+**Error Handling:**
+
+From `tasks.py:194-196`:
+
+```python
+except SoftTimeLimitExceeded:
+    logger.error(f"[Job {job_id}] Batch {batch_number}: Task exceeded time limit")
+    raise
+```
+
+**Solutions:**
+- Reduce batch sizes
+- Increase worker count (parallel processing)
+- Split large jobs into smaller chunks
+
+</Accordion>
+
+<Accordion title="Task Failure Tracking">
+
+**Automatic Status Update:**
+
+From `tasks.py:200-213`, failed tasks update job status:
+
+```python
+except Exception as e:
+    logger.error(f"[Job {job_id}] Batch {batch_number}: Error - {str(e)}")
+    
+    # Update job with error
+    try:
+        supabase = get_supabase_client()
+        supabase.table('scrape_jobs')\
+            .update({
+                'status': 'failed',
+                'error_message': str(e),
+                'updated_at': datetime.now(timezone.utc).isoformat()
+            })\
+            .eq('job_id', job_id)\
+            .execute()
+    except:
+        pass
+```
+
+**Query Failed Jobs:**
+
+```sql
+SELECT job_id, status, error_message, created_at, updated_at
+FROM scrape_jobs
+WHERE status = 'failed'
+ORDER BY created_at DESC
+LIMIT 20;
+```
+
+</Accordion>
+
+### Database Errors
+
+<Accordion title="Connection Pool Exhaustion">
+
+**Error Message:**
+```
+Error: Too many connections
+Error: Connection pool exhausted
+```
+
+**Root Cause:**
+
+Supabase free tier allows max 50 concurrent connections.
+
+**Prevention:**
+
+From `app.py:165-166`, singleton pattern prevents connection leaks:
+
+```python
+_supabase_client = None
+_supabase_lock = threading.Lock()
+
+def get_supabase_client() -> Client:
+    global _supabase_client
+    if _supabase_client is not None:
+        return _supabase_client
+```
+
+**Solution:**
+
+```bash
+# Check current pool size
+heroku config:get SUPABASE_POOL_SIZE
+
+# Reduce if needed (free tier)
+heroku config:set SUPABASE_POOL_SIZE=3
+
+# Monitor connection count in Supabase dashboard
+```
+
+</Accordion>
+
+<Accordion title="Duplicate Key Errors">
+
+**Error Message:**
+```
+ERROR: duplicate key value violates unique constraint
+```
+
+**Handling:**
+
+From `utils/batch_processor.py:131-141`, duplicates are gracefully handled:
+
+```python
+# Only add to global_usernames if it doesn't exist
+if profile_id not in existing_ids:
+    global_records.append({
+        'id': profile_id,
+        'username': username,
+        'full_name': full_name,
+        'used': False,
+        'created_at': current_timestamp,
+        'base_id': base_id
+    })
+else:
+    skipped_existing += 1
+```
+
+**This is Normal:**
+- Profiles may be scraped multiple times
+- System tracks existing profiles to avoid duplicates
+- No action needed - automatic handling
+
+</Accordion>
+
+## Monitoring Best Practices
+
+### Log Aggregation
+
+**Centralized Logging:**
+
+```bash
+# Stream logs to external service (optional)
+heroku drains:add https://logs.your-service.com/drain
+
+# Popular services:
+# - Papertrail
+# - Loggly
+# - Datadog
+```
+
+**Log Retention:**
+
+Heroku retains logs for:
+- Free tier: 1,500 lines
+- Paid dynos: 1 week
+
+For longer retention, use log drains or Sentry.
+
+### Alert Configuration
+
+**Sentry Alerts:**
+
+1. Go to Sentry → Alerts → Create Alert Rule
+2. Configure conditions:
+   - Error frequency threshold
+   - New issue types
+   - Performance degradation
+3. Set notification channels (email, Slack, PagerDuty)
+
+**Example Alert Rules:**
+
+```yaml
+Rule 1: High Error Rate
+  Condition: > 10 errors in 5 minutes
+  Action: Email + Slack notification
+  
+Rule 2: New Error Type
+  Condition: First occurrence of error
+  Action: Email notification
+  
+Rule 3: Performance Degradation
+  Condition: P95 response time > 2 seconds
+  Action: Slack notification
+```
+
+### Health Check Monitoring
+
+**Setup Uptime Monitoring:**
+
+```bash
+# Use services like:
+# - UptimeRobot (free)
+# - Pingdom
+# - StatusCake
+
+# Monitor endpoint:
+https://your-app.herokuapp.com/health
+
+# Check interval: 5 minutes
+# Alert on: 2 consecutive failures
+```
+
+**Health Check Response:**
+
+From `app.py:474-484`:
+
+```json
+{
+  "status": "ok",
+  "service": "Instagram Scraper API",
+  "version": "1.0.0"
+}
+```
+
+## Error Analysis
+
+### Error Patterns
+
+<CodeGroup>
+
+```sql Frequent Errors Query
+-- In Sentry or logs, identify most common errors
+SELECT error_message, COUNT(*) as occurrences
+FROM error_logs
+WHERE created_at > NOW() - INTERVAL '24 hours'
+GROUP BY error_message
+ORDER BY occurrences DESC
+LIMIT 10;
+```
+
+```sql Failed Jobs Analysis
+-- Analyze job failure patterns
+SELECT 
+    DATE_TRUNC('hour', created_at) as hour,
+    status,
+    COUNT(*) as job_count
+FROM scrape_jobs
+WHERE created_at > NOW() - INTERVAL '7 days'
+GROUP BY hour, status
+ORDER BY hour DESC;
+```
+
+```sql Error Rate by Platform
+-- If using multi-platform scraping
+SELECT 
+    platform,
+    COUNT(CASE WHEN status = 'failed' THEN 1 END) as failures,
+    COUNT(*) as total,
+    ROUND(100.0 * COUNT(CASE WHEN status = 'failed' THEN 1 END) / COUNT(*), 2) as failure_rate
+FROM scrape_jobs
+WHERE created_at > NOW() - INTERVAL '7 days'
+GROUP BY platform;
+```
+
+</CodeGroup>
+
+### Performance Metrics
+
+**Key Metrics to Track:**
+
+1. **API Response Time**
+   - Target: < 200ms for job submission
+   - Monitor in Sentry Performance tab
+
+2. **Task Completion Rate**
+   ```sql
+   SELECT 
+       COUNT(CASE WHEN status = 'completed' THEN 1 END) as completed,
+       COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed,
+       COUNT(*) as total
+   FROM scrape_jobs
+   WHERE created_at > NOW() - INTERVAL '24 hours';
+   ```
+
+3. **Worker Memory Usage**
+   ```bash
+   heroku logs --dyno worker | grep "R14\|Memory"
+   ```
+
+4. **Queue Length**
+   ```bash
+   heroku redis:cli
+   > LLEN celery
+   ```
+
+## Error Resolution Workflow
+
+<Steps>
+  <Step title="Identify Error">
+    - Sentry alert notification
+    - User report
+    - Monitoring alert
+  </Step>
+  
+  <Step title="Assess Impact">
+    ```sql
+    -- Count affected jobs
+    SELECT COUNT(*) 
+    FROM scrape_jobs 
+    WHERE status = 'failed' 
+      AND error_message LIKE '%specific error%';
+    ```
+  </Step>
+  
+  <Step title="Diagnose Root Cause">
+    1. Check Sentry for full stack trace
+    2. Review recent deployments
+    3. Check configuration changes
+    4. Analyze error patterns
+  </Step>
+  
+  <Step title="Implement Fix">
+    1. Test fix locally
+    2. Deploy to staging (if available)
+    3. Deploy to production
+    4. Monitor for recurrence
+  </Step>
+  
+  <Step title="Verify Resolution">
+    ```bash
+    # Monitor logs after deployment
+    heroku logs --tail | grep ERROR
+    
+    # Check Sentry for new occurrences
+    # Check success rate
+    ```
+  </Step>
+  
+  <Step title="Document">
+    - Update troubleshooting docs
+    - Add prevention measures
+    - Update monitoring alerts
+  </Step>
+</Steps>
+
+## Custom Error Tracking
+
+### Add Custom Tags
+
+```python
+# In app.py or tasks.py
+import sentry_sdk
+
+@app.route('/api/scrape-followers', methods=['POST'])
+def scrape_followers_api():
+    # Add custom context
+    sentry_sdk.set_tag('platform', request.json.get('platform', 'instagram'))
+    sentry_sdk.set_tag('base_id', get_base_id_from_request())
+    sentry_sdk.set_context('request_data', {
+        'accounts_count': len(request.json.get('accounts', [])),
+        'target_gender': request.json.get('targetGender')
+    })
+    
+    # Your code here
+```
+
+### Manual Error Capture
+
+```python
+try:
+    # Risky operation
+    result = process_large_batch()
+except Exception as e:
+    # Log to Sentry with extra context
+    sentry_sdk.capture_exception(e)
+    sentry_sdk.capture_message(
+        f"Batch processing failed for job {job_id}",
+        level='error',
+        extras={'batch_size': len(batch), 'job_id': job_id}
+    )
+    raise
+```
+
+### Breadcrumbs for Debugging
+
+```python
+import sentry_sdk
+
+@celery.task
+def scrape_account_batch(job_id, accounts, ...):
+    sentry_sdk.add_breadcrumb(
+        category='scraping',
+        message=f'Started scraping {len(accounts)} accounts',
+        level='info'
+    )
+    
+    followers = scrape_followers(accounts, max_per_account)
+    
+    sentry_sdk.add_breadcrumb(
+        category='scraping',
+        message=f'Scraped {len(followers)} followers',
+        level='info'
+    )
+    
+    # If error occurs, breadcrumbs show execution path
+```
+
+## Error Prevention
+
+### Input Validation
+
+```python
+# Add validation to prevent errors
+def validate_request_data(data):
+    errors = []
+    
+    if not data.get('accounts'):
+        errors.append('Missing accounts field')
+    elif not isinstance(data['accounts'], list):
+        errors.append('accounts must be a list')
+    elif len(data['accounts']) > 50:
+        errors.append('Max 50 accounts per request')
+    
+    if errors:
+        raise ValueError('; '.join(errors))
+```
+
+### Rate Limiting
+
+```python
+# Already implemented in app.py:94-101
+from flask_limiter import Limiter
+
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["200 per hour"],
+    storage_uri='memory://'
+)
+```
+
+### Graceful Degradation
+
+```python
+# Example: Fallback for Apify failures
+try:
+    followers = scrape_followers(accounts, max_count, platform)
+except Exception as e:
+    logger.error(f"Apify scraping failed: {e}")
+    # Return empty result instead of crashing
+    return {
+        'job_id': job_id,
+        'profiles': [],
+        'warning': 'Scraping service temporarily unavailable'
+    }
+```
+
+## Monitoring Dashboard
+
+### Recommended Metrics
+
+**Create monitoring dashboard tracking:**
+
+1. **Error Rate** - Errors per hour/day
+2. **Success Rate** - Completed jobs / Total jobs
+3. **Average Task Duration** - Time to complete tasks
+4. **Queue Length** - Pending tasks in Redis
+5. **API Response Time** - P50, P95, P99
+6. **Worker Health** - Active workers, memory usage
+7. **Database Performance** - Query time, connection pool
+
+**Tools:**
+- Sentry Performance tab
+- Heroku Metrics (for paid dynos)
+- Custom Grafana/Datadog dashboard
+- Supabase dashboard (Database metrics)
+
+<Note>
+  Regular monitoring prevents issues before they impact users. Set up alerts for critical metrics.
+</Note>

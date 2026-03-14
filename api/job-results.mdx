@@ -1,0 +1,402 @@
+---
+title: 'Job Results'
+description: 'Retrieve scraped profile results from a completed job with pagination'
+---
+
+## GET /api/job-results/{job_id}
+
+Retrieve the scraped profile data from a completed job. This endpoint supports pagination for efficient handling of large result sets.
+
+<Warning>
+  This endpoint only returns results for jobs with status `completed`. Jobs that are still `processing`, `queued`, or `failed` will return an error.
+</Warning>
+
+### Path Parameters
+
+<ParamField path="job_id" type="string" required>
+  UUID of the completed scraping job.
+  
+  Format: Standard UUID v4 (e.g., `550e8400-e29b-41d4-a716-446655440000`)
+</ParamField>
+
+### Query Parameters
+
+<ParamField query="page" type="integer" default="1">
+  Page number for pagination (1-indexed).
+  
+  Must be positive.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="1000">
+  Number of results per page.
+  
+  - Minimum: 1
+  - Maximum: 5000
+  - Default: 1000
+  
+  Values exceeding 5000 will be capped at 5000.
+</ParamField>
+
+### Response
+
+<ResponseField name="success" type="boolean" required>
+  Indicates whether the request was successful.
+</ResponseField>
+
+<ResponseField name="job_id" type="string" required>
+  UUID of the scraping job.
+</ResponseField>
+
+<ResponseField name="page" type="integer" required>
+  Current page number.
+</ResponseField>
+
+<ResponseField name="limit" type="integer" required>
+  Number of results per page (as requested, capped at 5000).
+</ResponseField>
+
+<ResponseField name="total" type="integer" required>
+  Total number of profiles available across all pages.
+</ResponseField>
+
+<ResponseField name="profiles" type="array" required>
+  Array of scraped profile objects.
+  
+  <Expandable title="Profile Object">
+    <ResponseField name="id" type="string" required>
+      Platform-specific profile ID (e.g., Instagram user ID).
+    </ResponseField>
+    
+    <ResponseField name="username" type="string" required>
+      Platform username/handle.
+    </ResponseField>
+    
+    <ResponseField name="full_name" type="string">
+      Display name or full name of the profile. May be empty string if not available.
+    </ResponseField>
+    
+    <ResponseField name="created_at" type="string" required>
+      ISO 8601 timestamp when this profile was added to results.
+      
+      Format: `YYYY-MM-DDTHH:MM:SS.mmmmmmZ`
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Example Request
+
+```bash
+# Get first page (default 1000 results)
+curl -X GET https://your-api.com/api/job-results/550e8400-e29b-41d4-a716-446655440000
+
+# Get second page with 500 results per page
+curl -X GET "https://your-api.com/api/job-results/550e8400-e29b-41d4-a716-446655440000?page=2&limit=500"
+
+# Get maximum results per page (5000)
+curl -X GET "https://your-api.com/api/job-results/550e8400-e29b-41d4-a716-446655440000?limit=5000"
+```
+
+### Example Responses
+
+<CodeGroup>
+```json 200 Success
+{
+  "success": true,
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "page": 1,
+  "limit": 1000,
+  "total": 5000,
+  "profiles": [
+    {
+      "id": "123456789",
+      "username": "john_doe",
+      "full_name": "John Doe",
+      "created_at": "2026-03-14T11:45:30.123456Z"
+    },
+    {
+      "id": "987654321",
+      "username": "jane_smith",
+      "full_name": "Jane Smith",
+      "created_at": "2026-03-14T11:45:30.234567Z"
+    },
+    {
+      "id": "456789123",
+      "username": "mike_wilson",
+      "full_name": "",
+      "created_at": "2026-03-14T11:45:30.345678Z"
+    }
+  ]
+}
+```
+
+```json 200 Success - Empty Results
+{
+  "success": true,
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "page": 1,
+  "limit": 1000,
+  "total": 0,
+  "profiles": []
+}
+```
+
+```json 404 Not Found
+{
+  "success": false,
+  "error": "Job 550e8400-e29b-41d4-a716-446655440000 not found"
+}
+```
+
+```json 400 Bad Request - Job Not Completed
+{
+  "success": false,
+  "error": "Job is not completed yet (status: processing)"
+}
+```
+
+```json 500 Server Error
+{
+  "success": false,
+  "error": "Internal server error message"
+}
+```
+</CodeGroup>
+
+## Pagination Details
+
+### Calculating Total Pages
+
+To determine the total number of pages:
+
+```javascript
+const totalPages = Math.ceil(total / limit);
+```
+
+Example:
+- Total profiles: 5000
+- Limit per page: 1000
+- Total pages: Math.ceil(5000 / 1000) = 5
+
+### Fetching All Results
+
+<CodeGroup>
+```python Python Example
+import requests
+
+def fetch_all_results(job_id, limit=1000):
+    """
+    Fetch all results from a completed job using pagination.
+    
+    Args:
+        job_id: UUID of the completed job
+        limit: Results per page (default 1000, max 5000)
+    
+    Returns:
+        List of all profile dictionaries
+    """
+    all_profiles = []
+    page = 1
+    
+    while True:
+        response = requests.get(
+            f"https://api.example.com/api/job-results/{job_id}",
+            params={"page": page, "limit": limit}
+        )
+        data = response.json()
+        
+        if not data["success"]:
+            raise Exception(f"Failed to fetch results: {data.get('error')}")
+        
+        profiles = data["profiles"]
+        all_profiles.extend(profiles)
+        
+        # Check if we've fetched all results
+        if len(all_profiles) >= data["total"]:
+            break
+        
+        page += 1
+    
+    return all_profiles
+
+# Usage
+profiles = fetch_all_results("550e8400-e29b-41d4-a716-446655440000")
+print(f"Fetched {len(profiles)} total profiles")
+```
+
+```javascript JavaScript Example
+async function fetchAllResults(jobId, limit = 1000) {
+  let allProfiles = [];
+  let page = 1;
+  
+  while (true) {
+    const url = new URL(`https://api.example.com/api/job-results/${jobId}`);
+    url.searchParams.set('page', page);
+    url.searchParams.set('limit', limit);
+    
+    const response = await fetch(url);
+    const data = await response.json();
+    
+    if (!data.success) {
+      throw new Error(`Failed to fetch results: ${data.error}`);
+    }
+    
+    allProfiles = allProfiles.concat(data.profiles);
+    
+    // Check if we've fetched all results
+    if (allProfiles.length >= data.total) {
+      break;
+    }
+    
+    page++;
+  }
+  
+  return allProfiles;
+}
+
+// Usage
+const profiles = await fetchAllResults('550e8400-e29b-41d4-a716-446655440000');
+console.log(`Fetched ${profiles.length} total profiles`);
+```
+
+```bash cURL Script
+#!/bin/bash
+
+JOB_ID="550e8400-e29b-41d4-a716-446655440000"
+LIMIT=1000
+PAGE=1
+
+# Get first page to determine total
+RESPONSE=$(curl -s "https://api.example.com/api/job-results/${JOB_ID}?page=${PAGE}&limit=${LIMIT}")
+TOTAL=$(echo $RESPONSE | jq -r '.total')
+TOTAL_PAGES=$(( ($TOTAL + $LIMIT - 1) / $LIMIT ))
+
+echo "Total profiles: $TOTAL"
+echo "Total pages: $TOTAL_PAGES"
+
+# Fetch all pages
+for ((PAGE=1; PAGE<=$TOTAL_PAGES; PAGE++)); do
+  echo "Fetching page $PAGE..."
+  curl -s "https://api.example.com/api/job-results/${JOB_ID}?page=${PAGE}&limit=${LIMIT}" \
+    | jq -r '.profiles[] | [.id, .username, .full_name] | @csv' \
+    >> results.csv
+done
+
+echo "All results saved to results.csv"
+```
+</CodeGroup>
+
+## Performance Optimization
+
+### Choosing the Right Page Size
+
+<AccordionGroup>
+  <Accordion title="Small Jobs (less than 1000 profiles)">
+    Use default limit (1000) to fetch all results in a single request.
+    
+    ```bash
+    curl -X GET https://api.example.com/api/job-results/{job_id}
+    ```
+  </Accordion>
+  
+  <Accordion title="Medium Jobs (1000-10000 profiles)">
+    Use larger page sizes (2000-5000) to reduce number of requests.
+    
+    ```bash
+    curl -X GET "https://api.example.com/api/job-results/{job_id}?limit=5000"
+    ```
+  </Accordion>
+  
+  <Accordion title="Large Jobs (>10000 profiles)">
+    Use maximum page size (5000) and implement parallel fetching for better performance.
+    
+    ```python
+    from concurrent.futures import ThreadPoolExecutor
+    import requests
+    
+    def fetch_page(job_id, page, limit=5000):
+        response = requests.get(
+            f"https://api.example.com/api/job-results/{job_id}",
+            params={"page": page, "limit": limit}
+        )
+        return response.json()["profiles"]
+    
+    # Fetch first page to get total
+    first_page = fetch_page(job_id, 1)
+    total_pages = 20  # Calculate based on total from first response
+    
+    # Fetch remaining pages in parallel
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(fetch_page, job_id, p) for p in range(2, total_pages + 1)]
+        remaining_profiles = [f.result() for f in futures]
+    
+    all_profiles = first_page + [p for batch in remaining_profiles for p in batch]
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Result Ordering
+
+Results are ordered by `created_at` in descending order (newest first). This ensures consistent pagination even if new jobs are created.
+
+<Note>
+  The order remains stable for a completed job, so you can safely paginate without worrying about results shifting between requests.
+</Note>
+
+## Integration Example
+
+Complete workflow from job creation to result retrieval:
+
+```python
+import requests
+import time
+
+API_BASE = "https://api.example.com"
+BASE_ID = "appABC123XYZ456"
+
+# Step 1: Create scraping job
+response = requests.post(
+    f"{API_BASE}/api/scrape-followers",
+    headers={
+        "Content-Type": "application/json",
+        "X-Base-Id": BASE_ID
+    },
+    json={
+        "accounts": ["influencer1", "influencer2"],
+        "targetGender": "male",
+        "totalScrapeCount": 500,
+        "platform": "Instagram"
+    }
+)
+
+job_data = response.json()
+job_id = job_data["job_id"]
+print(f"Job created: {job_id}")
+
+# Step 2: Poll for completion
+while True:
+    status_response = requests.get(f"{API_BASE}/api/job-status/{job_id}")
+    status = status_response.json()
+    
+    print(f"Status: {status['status']}, Progress: {status['progress']}%")
+    
+    if status["status"] == "completed":
+        break
+    elif status["status"] == "failed":
+        raise Exception(f"Job failed: {status['error_message']}")
+    
+    time.sleep(15)
+
+# Step 3: Fetch results
+results_response = requests.get(
+    f"{API_BASE}/api/job-results/{job_id}",
+    params={"limit": 5000}
+)
+
+results = results_response.json()
+print(f"Total profiles: {results['total']}")
+print(f"Fetched {len(results['profiles'])} profiles")
+
+# Process profiles
+for profile in results["profiles"]:
+    print(f"  - {profile['username']} ({profile['full_name']})")
+```

@@ -1,0 +1,645 @@
+---
+title: Debugging Guide
+description: Comprehensive debugging techniques for the Click Creators Scraper Server
+---
+
+## Debugging the Scraper Server
+
+This guide provides debugging techniques and commands for diagnosing issues in the scraper server.
+
+## Log Analysis
+
+### Viewing Logs
+
+<CodeGroup>
+
+```bash Heroku
+# Real-time log stream
+heroku logs --tail
+
+# Last 1000 lines
+heroku logs --num 1000
+
+# Worker logs only
+heroku logs --tail --dyno worker
+
+# Web dyno logs only
+heroku logs --tail --dyno web
+
+# Filter by date
+heroku logs --tail --since="2025-01-01 00:00"
+```
+
+```bash Render
+# Access via Render dashboard
+# Services → Your Service → Logs
+
+# Or use Render CLI
+render logs -f
+```
+
+```bash Local Development
+# Flask app logs
+python app.py
+
+# Celery worker logs
+celery -A celery_config worker --loglevel=info
+```
+
+</CodeGroup>
+
+### Log Patterns to Search For
+
+**Error Detection:**
+
+```bash
+# Find all errors
+heroku logs | grep ERROR
+
+# Find warnings
+heroku logs | grep WARNING
+
+# Find Apify failures
+heroku logs | grep "Apify.*error\|Failed to scrape"
+
+# Find database errors
+heroku logs | grep "Supabase\|SUPABASE\|database"
+
+# Find memory issues
+heroku logs | grep "R14\|R15\|Memory"
+```
+
+**Success Monitoring:**
+
+```bash
+# Track scraping progress
+heroku logs --tail | grep "Scraped\|profiles"
+
+# Monitor batch processing
+heroku logs --tail | grep "Batch\|batch"
+
+# Watch job completion
+heroku logs --tail | grep "complete\|completed"
+```
+
+### Understanding Log Levels
+
+From `app.py:51-56`, logging is configured with timestamps:
+
+```python
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+```
+
+**Log Levels:**
+- `INFO`: Normal operations, progress updates
+- `WARNING`: Non-critical issues (e.g., skipped profiles)
+- `ERROR`: Critical failures requiring attention
+- `DEBUG`: Detailed diagnostic info (not enabled in production)
+
+## Debugging Specific Components
+
+### Celery Tasks
+
+<Accordion title="Debug Scraping Tasks">
+
+From `tasks.py:98-214`, scraping tasks log extensively:
+
+**Monitor Task Progress:**
+
+```bash
+# Watch batch processing
+heroku logs --tail --dyno worker | grep "Batch"
+
+# Example output:
+# [Job abc123] Batch 1: Scraping 2 instagram accounts (base_id=appXYZ)
+# [Job abc123] Batch 1: Scraped 150 followers from instagram
+# [Job abc123] Batch 1: Filtered to 120 profiles
+```
+
+**Check Task Failures:**
+
+```bash
+# Find failed tasks
+heroku logs | grep "Task.*failed\|Task.*error"
+
+# Check retry attempts
+heroku logs | grep "Retry attempt"
+```
+
+**Task Retry Logic:**
+
+From `tasks.py:88-95`:
+
+```python
+class BaseTask(Task):
+    autoretry_for = (Exception,)
+    retry_kwargs = {'max_retries': 3}
+    retry_backoff = True
+    retry_backoff_max = 600  # 10 minutes
+    retry_jitter = True
+```
+
+Tasks automatically retry up to 3 times with exponential backoff.
+
+</Accordion>
+
+<Accordion title="Debug Redis Queue">
+
+**Inspect Queue State:**
+
+```bash
+# Connect to Redis
+heroku redis:cli
+
+# Check queue length
+> LLEN celery
+# Shows number of pending tasks in main queue
+
+# Check all queues
+> LLEN default
+> LLEN scraping
+> LLEN processing
+
+# View pending tasks (first 10)
+> LRANGE celery 0 9
+
+# Clear queue (if needed)
+> DEL celery
+```
+
+**Queue Configuration:**
+
+From `celery_config.py:57-62`, three queues are configured:
+
+```python
+task_queues=(
+    Queue('default', Exchange('default'), routing_key='default'),
+    Queue('scraping', Exchange('scraping'), routing_key='scraping'),
+    Queue('processing', Exchange('processing'), routing_key='processing'),
+)
+```
+
+</Accordion>
+
+<Accordion title="Debug Database Queries">
+
+**Monitor Database Operations:**
+
+```bash
+# Watch batch inserts
+heroku logs --tail | grep "Bulk insert\|batch insert"
+
+# Example output:
+# Starting BULK insert of 1000 profiles in batches of 1000
+# ✓ Inserted batch 1/1 into raw_scraped_profiles (1000 records)
+# ✓ Inserted batch 1/1 into global_usernames (850 records)
+```
+
+**Check Connection Pool:**
+
+```bash
+# View pool configuration
+heroku config:get SUPABASE_POOL_SIZE
+
+# Monitor connection warnings
+heroku logs | grep "connection\|pool"
+```
+
+**Query Performance:**
+
+From `utils/batch_processor.py:84-109`, duplicate checking is optimized:
+
+```python
+# Checks 5000 IDs at once instead of individual queries
+chunk_size = 5000
+for i in range(0, total_ids, chunk_size):
+    existing = supabase.table('global_usernames')\
+        .select('id')\
+        .in_('id', chunk_ids)\
+        .execute()
+```
+
+**Performance Logs:**
+
+```bash
+# Monitor bulk operations
+heroku logs --tail | grep "Checked chunk\|queries"
+
+# Example:
+# Checked chunk 1/2: found 450 existing profiles
+# Found 450 existing profiles in global_usernames (checked 10000 in 2 queries)
+```
+
+</Accordion>
+
+### API Endpoint Debugging
+
+<Accordion title="Test Endpoints with curl">
+
+**Health Check:**
+
+```bash
+curl https://your-app.herokuapp.com/health
+
+# Expected response:
+# {"status": "ok", "service": "Instagram Scraper API", "version": "1.0.0"}
+```
+
+**Scrape Followers (Small Test):**
+
+```bash
+curl -X POST https://your-app.herokuapp.com/api/scrape-followers \
+  -H "Content-Type: application/json" \
+  -H "X-Base-Id: appXYZ123" \
+  -d '{
+    "accounts": ["nike"],
+    "targetGender": "male",
+    "totalScrapeCount": 10,
+    "platform": "instagram"
+  }' | jq
+
+# Expected response:
+# {
+#   "success": true,
+#   "data": {
+#     "accounts": [...],
+#     "totalFiltered": 10,
+#     "totalScraped": 12
+#   }
+# }
+```
+
+**Ingest Profiles:**
+
+```bash
+curl -X POST https://your-app.herokuapp.com/api/ingest \
+  -H "Content-Type: application/json" \
+  -H "X-Base-Id: appXYZ123" \
+  -d '{
+    "profiles": [
+      {"id": "123", "username": "test_user", "full_name": "Test User"}
+    ]
+  }' | jq
+
+# Expected response:
+# {
+#   "success": true,
+#   "base_id": "appXYZ123",
+#   "inserted_raw": 1,
+#   "added_to_global": 1,
+#   "skipped_existing": 0
+# }
+```
+
+**Test with Invalid Data:**
+
+```bash
+# Missing required field
+curl -X POST https://your-app.herokuapp.com/api/scrape-followers \
+  -H "Content-Type: application/json" \
+  -d '{}' | jq
+
+# Expected error:
+# {
+#   "success": false,
+#   "error": "Missing 'accounts' field in request body"
+# }
+```
+
+</Accordion>
+
+<Accordion title="Debug Request Flow">
+
+**Enable Verbose Logging:**
+
+Temporarily edit `app.py:52` for debugging:
+
+```python
+# Change from INFO to DEBUG
+level=logging.DEBUG  # More verbose output
+```
+
+**Trace Request Lifecycle:**
+
+From `app.py:112-156`, RLS context is set before each request:
+
+```bash
+# Monitor RLS setup
+heroku logs --tail | grep "RLS context"
+
+# Example output:
+# RLS context initialized for base_id=appXYZ123
+# No base_id provided for POST /api/scrape-followers
+```
+
+**Check Request Headers:**
+
+```bash
+curl -v https://your-app.herokuapp.com/api/ingest \
+  -H "X-Base-Id: appXYZ123" \
+  -H "Content-Type: application/json" \
+  -d '{"profiles": []}'
+
+# -v flag shows full HTTP headers
+```
+
+</Accordion>
+
+## Interactive Debugging
+
+### Local Development with Debugger
+
+<Steps>
+  <Step title="Install Dependencies">
+    ```bash
+    cd server
+    python3 -m venv venv
+    source venv/bin/activate
+    pip install -r requirements.txt
+    ```
+  </Step>
+  
+  <Step title="Configure Environment">
+    ```bash
+    cp .env.example .env
+    # Edit .env with your credentials
+    ```
+  </Step>
+  
+  <Step title="Start Redis">
+    ```bash
+    # macOS
+    brew services start redis
+    
+    # Linux
+    sudo systemctl start redis
+    ```
+  </Step>
+  
+  <Step title="Run with Debugger">
+    ```python
+    # Add breakpoints in app.py
+    import pdb; pdb.set_trace()  # Add at line you want to debug
+    
+    # Run Flask
+    python app.py
+    
+    # In another terminal, start Celery
+    celery -A celery_config worker --loglevel=debug
+    ```
+  </Step>
+</Steps>
+
+### Using Python Debugger (pdb)
+
+```python
+# In app.py or tasks.py, add:
+import pdb
+
+@app.route('/api/scrape-followers', methods=['POST'])
+def scrape_followers_api():
+    data = request.get_json()
+    pdb.set_trace()  # Debugger stops here
+    # ... rest of function
+```
+
+**pdb Commands:**
+- `n` - Next line
+- `s` - Step into function
+- `c` - Continue execution
+- `p variable_name` - Print variable
+- `l` - List current code
+- `q` - Quit debugger
+
+## Performance Profiling
+
+### Identify Slow Operations
+
+```python
+# Add timing to app.py
+import time
+
+@app.route('/api/scrape-followers', methods=['POST'])
+def scrape_followers_api():
+    start_time = time.time()
+    # ... your code ...
+    elapsed = time.time() - start_time
+    logger.info(f"Request completed in {elapsed:.2f}s")
+```
+
+### Monitor Database Query Time
+
+```bash
+# In Supabase dashboard:
+# Go to Logs → Database
+# Filter by slow queries (> 1000ms)
+```
+
+### Profile Memory Usage
+
+```python
+# Add to tasks.py
+import tracemalloc
+
+@celery.task
+def scrape_account_batch(...):
+    tracemalloc.start()
+    # ... task code ...
+    current, peak = tracemalloc.get_traced_memory()
+    logger.info(f"Memory: current={current/1024/1024:.1f}MB, peak={peak/1024/1024:.1f}MB")
+    tracemalloc.stop()
+```
+
+## Database Debugging
+
+### Query Active Jobs
+
+```sql
+-- In Supabase SQL Editor
+SELECT job_id, status, progress, profiles_scraped, created_at
+FROM scrape_jobs
+WHERE status IN ('queued', 'processing')
+ORDER BY created_at DESC
+LIMIT 10;
+```
+
+### Check for Stuck Jobs
+
+```sql
+-- Jobs processing for > 2 hours
+SELECT job_id, status, created_at, updated_at,
+       AGE(NOW(), created_at) as time_running
+FROM scrape_jobs
+WHERE status = 'processing'
+  AND created_at < NOW() - INTERVAL '2 hours'
+ORDER BY created_at;
+```
+
+### Monitor Global Usernames Pool
+
+```sql
+-- Check available unused profiles
+SELECT base_id, 
+       COUNT(*) as total,
+       SUM(CASE WHEN used = false THEN 1 ELSE 0 END) as unused,
+       SUM(CASE WHEN used = true THEN 1 ELSE 0 END) as used
+FROM global_usernames
+GROUP BY base_id;
+```
+
+## Network Debugging
+
+### Test Apify Connectivity
+
+```bash
+# Test Apify API
+curl -H "Authorization: Bearer $APIFY_API_KEY" \
+  https://api.apify.com/v2/acts
+
+# Should return list of available actors
+```
+
+### Test Supabase Connectivity
+
+```bash
+# Test connection
+curl -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+     -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+     "$SUPABASE_URL/rest/v1/campaigns?select=campaign_id&limit=1"
+
+# Should return JSON with campaigns
+```
+
+### Check SSL/TLS Issues
+
+```bash
+# Test Redis SSL
+openssl s_client -connect your-redis.com:6379 -starttls redis
+
+# Verify certificate
+openssl s_client -showcerts -connect your-redis.com:6379
+```
+
+## Common Debugging Scenarios
+
+<AccordionGroup>
+  <Accordion title="Profile Data Not Saving">
+    
+**Symptoms:** Scraping completes but no data in database.
+
+**Debug Steps:**
+
+```bash
+# 1. Check if profiles reached aggregation
+heroku logs | grep "Aggregating results"
+
+# 2. Check batch insert logs
+heroku logs | grep "BULK INSERT"
+
+# 3. Query database directly
+# In Supabase SQL Editor:
+SELECT COUNT(*) FROM raw_scraped_profiles 
+WHERE scraped_at > NOW() - INTERVAL '1 hour';
+
+# 4. Check for errors during insert
+heroku logs | grep "Failed to insert"
+```
+
+**Common Causes:**
+- Missing `base_id` in request (`tasks.py:134-139`)
+- Database RLS policies blocking insert
+- Invalid profile data format
+
+</Accordion>
+  
+  <Accordion title="Gender Detection Accuracy Issues">
+    
+**Debug Gender Detection:**
+
+From `app.py:268-374`, gender detection uses multiple strategies:
+
+```python
+# Test locally
+from utils.gender import detect_gender
+
+test_followers = {
+    'john_doe': {'full_name': 'John Doe', 'username': 'john_doe'},
+    'jane_smith': {'full_name': 'Jane Smith', 'username': 'jane_smith'}
+}
+
+results = detect_gender(test_followers)
+print(results)
+# {'john_doe': 'male', 'jane_smith': 'female'}
+```
+
+**Check Detection Logs:**
+
+```bash
+heroku logs | grep "Gender distribution"
+
+# Example output:
+# Gender distribution:
+#   male: 120
+#   female: 80
+#   unknown: 50
+```
+
+  </Accordion>
+</AccordionGroup>
+
+## Enable Debug Mode
+
+<Warning>
+  Only enable debug mode in development. Never in production.
+</Warning>
+
+```bash
+# Local only
+export FLASK_ENV=development
+export FLASK_DEBUG=1
+python app.py
+
+# Celery debug mode
+celery -A celery_config worker --loglevel=debug
+```
+
+## Debugging Checklist
+
+<Steps>
+  <Step title="Reproduce the Issue">
+    Document exact steps that trigger the problem.
+  </Step>
+  
+  <Step title="Collect Logs">
+    ```bash
+    heroku logs --num 1000 > debug.log
+    ```
+  </Step>
+  
+  <Step title="Check Configuration">
+    ```bash
+    heroku config > config.txt
+    # Review all environment variables
+    ```
+  </Step>
+  
+  <Step title="Test Isolation">
+    Test each component separately (API, database, Redis, Apify).
+  </Step>
+  
+  <Step title="Review Code Path">
+    Trace through relevant source files to understand flow.
+  </Step>
+  
+  <Step title="Apply Fix">
+    Make changes, test locally, then deploy.
+  </Step>
+  
+  <Step title="Verify Solution">
+    Monitor logs after deployment to confirm fix.
+  </Step>
+</Steps>

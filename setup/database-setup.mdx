@@ -1,0 +1,628 @@
+---
+title: "Database Setup"
+description: "Configure Supabase database schema, tables, indexes, and Row Level Security (RLS) policies for the Click Creators Scraper Server"
+---
+
+## Overview
+
+The scraper server uses **Supabase (PostgreSQL)** as its primary database. This guide covers:
+
+- Creating required tables
+- Adding performance indexes
+- Configuring Row Level Security (RLS)
+- Multi-tenant setup
+
+<Info>
+All database operations are **free-tier compatible**. The server is optimized to stay within Supabase's free tier limits (500MB storage, 5GB egress/month).
+</Info>
+
+## Database Architecture
+
+The system uses 5 main tables:
+
+```
+┌─────────────────────────────────────────────────────┐
+│                 DATABASE SCHEMA                     │
+└─────────────────────────────────────────────────────┘
+
+┌───────────────────┐
+│  scrape_jobs      │  → Job tracking for async scraping
+│  ───────────────  │
+│  - job_id (PK)    │
+│  - status         │
+│  - progress       │
+│  - base_id        │  (multi-tenant)
+└───────────────────┘
+         │
+         │ 1:N
+         ▼
+┌───────────────────┐
+│  scrape_results   │  → Individual profile results
+│  ───────────────  │
+│  - result_id (PK) │
+│  - job_id (FK)    │
+│  - profile_id     │
+│  - username       │
+└───────────────────┘
+
+┌───────────────────────┐
+│  raw_scraped_profiles │  → All scraped profiles (raw)
+│  ─────────────────    │
+│  - id (PK)            │
+│  - username           │
+│  - full_name          │
+│  - base_id            │  (multi-tenant)
+│  - scraped_at         │
+└───────────────────────┘
+         │
+         │ Dedupe filter
+         ▼
+┌───────────────────┐
+│  global_usernames │  → Unique profiles for campaigns
+│  ───────────────  │
+│  - id (PK)        │
+│  - username       │
+│  - used (bool)    │  → Prevents duplicate assignments
+│  - base_id        │  (multi-tenant)
+└───────────────────┘
+         │
+         │ Campaign selection
+         ▼
+┌───────────────────┐       ┌───────────────────┐
+│  campaigns        │ 1:N   │ daily_assignments │
+│  ───────────────  │───────│  ───────────────  │
+│  - campaign_id    │       │  - assignment_id  │
+│  - campaign_date  │       │  - campaign_id    │
+│  - total_assigned │       │  - va_table_number│
+│  - status         │       │  - position       │
+│  - base_id        │       │  - username       │
+│  - airtable_base  │       │  - status         │
+└───────────────────┘       │  - base_id        │
+                            └───────────────────┘
+                                     │
+                                     │ Sync to
+                                     ▼
+                            ┌───────────────────┐
+                            │  Airtable VA      │
+                            │  Tables (1-80)    │
+                            └───────────────────┘
+```
+
+## Quick Setup
+
+<Steps>
+  <Step title="Access Supabase SQL Editor">
+    1. Go to your [Supabase Dashboard](https://app.supabase.com)
+    2. Select your project
+    3. Navigate to **SQL Editor** in the left sidebar
+    4. Click **+ New Query**
+  </Step>
+
+  <Step title="Run Table Creation Script">
+    Copy and execute the **Table Creation SQL** below to create all required tables.
+  </Step>
+
+  <Step title="Run Index Creation Script">
+    Copy and execute the **Performance Indexes SQL** below. This is **critical** for performance.
+  </Step>
+
+  <Step title="Configure RLS Policies (Optional)">
+    If using multi-tenant setup, apply the **RLS Policies SQL** below.
+  </Step>
+
+  <Step title="Verify Setup">
+    Check that all tables and indexes were created successfully.
+  </Step>
+</Steps>
+
+## Table Creation SQL
+
+### 1. Job Tracking Tables
+
+These tables track asynchronous scraping jobs:
+
+```sql
+-- Scraping jobs table
+CREATE TABLE IF NOT EXISTS scrape_jobs (
+  job_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  base_id TEXT NOT NULL DEFAULT 'default_instagram',
+  status TEXT NOT NULL DEFAULT 'queued',
+  progress NUMERIC(5,2) DEFAULT 0.00,
+  total_scraped INTEGER DEFAULT 0,
+  total_filtered INTEGER DEFAULT 0,
+  profiles_scraped INTEGER DEFAULT 0,
+  error_message TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  completed_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_scrape_jobs_base_id ON scrape_jobs(base_id);
+CREATE INDEX IF NOT EXISTS idx_scrape_jobs_status ON scrape_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_scrape_jobs_created_at ON scrape_jobs(created_at DESC);
+
+-- Scraping results table
+CREATE TABLE IF NOT EXISTS scrape_results (
+  result_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  job_id UUID NOT NULL REFERENCES scrape_jobs(job_id) ON DELETE CASCADE,
+  profile_id TEXT NOT NULL,
+  username TEXT NOT NULL,
+  full_name TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_scrape_results_job_id ON scrape_results(job_id);
+CREATE INDEX IF NOT EXISTS idx_scrape_results_profile_id ON scrape_results(profile_id);
+```
+
+### 2. Profile Storage Tables
+
+```sql
+-- Raw scraped profiles (all scraped data)
+CREATE TABLE IF NOT EXISTS raw_scraped_profiles (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  full_name TEXT,
+  base_id TEXT NOT NULL DEFAULT 'default_instagram',
+  scraped_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_raw_scraped_profiles_base_id ON raw_scraped_profiles(base_id);
+CREATE INDEX IF NOT EXISTS idx_raw_scraped_profiles_username ON raw_scraped_profiles(username);
+CREATE INDEX IF NOT EXISTS idx_raw_scraped_profiles_scraped_at ON raw_scraped_profiles(scraped_at DESC);
+
+-- Global usernames (deduplicated, ready for campaigns)
+CREATE TABLE IF NOT EXISTS global_usernames (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  full_name TEXT,
+  used BOOLEAN DEFAULT FALSE,
+  base_id TEXT NOT NULL DEFAULT 'default_instagram',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  used_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_global_usernames_base_id ON global_usernames(base_id);
+CREATE INDEX IF NOT EXISTS idx_global_usernames_used ON global_usernames(used);
+CREATE INDEX IF NOT EXISTS idx_global_usernames_base_used ON global_usernames(base_id, used);
+```
+
+### 3. Campaign Management Tables
+
+```sql
+-- Campaigns table
+CREATE TABLE IF NOT EXISTS campaigns (
+  campaign_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  campaign_date DATE NOT NULL,
+  total_assigned INTEGER DEFAULT 0,
+  base_id TEXT NOT NULL DEFAULT 'default_instagram',
+  airtable_base_id TEXT,
+  status BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_campaigns_base_id ON campaigns(base_id);
+CREATE INDEX IF NOT EXISTS idx_campaigns_campaign_date ON campaigns(campaign_date DESC);
+CREATE INDEX IF NOT EXISTS idx_campaigns_status ON campaigns(status);
+
+-- Daily assignments table
+CREATE TABLE IF NOT EXISTS daily_assignments (
+  assignment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  campaign_id UUID NOT NULL REFERENCES campaigns(campaign_id) ON DELETE CASCADE,
+  va_table_number INTEGER DEFAULT 0,
+  position INTEGER DEFAULT 0,
+  id TEXT NOT NULL,
+  username TEXT NOT NULL,
+  full_name TEXT,
+  base_id TEXT NOT NULL DEFAULT 'default_instagram',
+  status TEXT DEFAULT 'pending',
+  assigned_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_assignments_campaign_id ON daily_assignments(campaign_id);
+CREATE INDEX IF NOT EXISTS idx_daily_assignments_base_id ON daily_assignments(base_id);
+CREATE INDEX IF NOT EXISTS idx_daily_assignments_va_table ON daily_assignments(va_table_number);
+CREATE INDEX IF NOT EXISTS idx_daily_assignments_status ON daily_assignments(status);
+```
+
+## Performance Indexes SQL
+
+<Warning>
+**Critical:** These indexes reduce query times from 30-60 seconds to under 1 second. You **must** apply them for production use.
+</Warning>
+
+```sql
+-- ============================================================
+-- PERFORMANCE INDEXES FOR 500K+ PROFILES
+-- ============================================================
+-- Run this once in Supabase SQL Editor to optimize queries
+-- Reduces query times from 30-60s to less than 1s
+
+-- Job tracking indexes
+CREATE INDEX IF NOT EXISTS idx_scrape_jobs_base_status 
+  ON scrape_jobs(base_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_scrape_results_job_created 
+  ON scrape_results(job_id, created_at DESC);
+
+-- Profile lookup indexes (critical for duplicate detection)
+CREATE INDEX IF NOT EXISTS idx_raw_scraped_profiles_id_base 
+  ON raw_scraped_profiles(id, base_id);
+
+CREATE INDEX IF NOT EXISTS idx_global_usernames_id_base 
+  ON global_usernames(id, base_id);
+
+-- Campaign assignment indexes
+CREATE INDEX IF NOT EXISTS idx_daily_assignments_campaign_va 
+  ON daily_assignments(campaign_id, va_table_number);
+
+CREATE INDEX IF NOT EXISTS idx_daily_assignments_campaign_position 
+  ON daily_assignments(campaign_id, position);
+
+-- Compound index for campaign queries
+CREATE INDEX IF NOT EXISTS idx_campaigns_base_date_status 
+  ON campaigns(base_id, campaign_date DESC, status);
+
+-- Username search optimization
+CREATE INDEX IF NOT EXISTS idx_global_usernames_username_trgm 
+  ON global_usernames USING gin(username gin_trgm_ops);
+
+-- Enable pg_trgm extension for text search
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+```
+
+<Info>
+**What these indexes do:**
+
+- **Composite indexes** - Speed up multi-column WHERE clauses (e.g., `base_id` + `used`)
+- **Descending indexes** - Optimize ORDER BY DESC queries
+- **GIN indexes** - Enable fast text search with LIKE/ILIKE
+- **pg_trgm** - Trigram extension for fuzzy text matching
+</Info>
+
+## Row Level Security (RLS)
+
+<Note>
+RLS is optional but **highly recommended** for multi-tenant setups. It provides database-level isolation between different Airtable bases.
+</Note>
+
+### Enable RLS
+
+```sql
+-- Enable RLS on all tables
+ALTER TABLE scrape_jobs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE scrape_results ENABLE ROW LEVEL SECURITY;
+ALTER TABLE raw_scraped_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE global_usernames ENABLE ROW LEVEL SECURITY;
+ALTER TABLE campaigns ENABLE ROW LEVEL SECURITY;
+ALTER TABLE daily_assignments ENABLE ROW LEVEL SECURITY;
+```
+
+### Create RLS Policies
+
+```sql
+-- ============================================================
+-- ROW LEVEL SECURITY POLICIES
+-- ============================================================
+-- These policies filter data by base_id using JWT claims
+-- The server sets `app.metadata.base_id` in the JWT context
+
+-- Scrape jobs policies
+CREATE POLICY "Users can view their own scrape jobs"
+  ON scrape_jobs FOR SELECT
+  USING (base_id = current_setting('app.metadata.base_id', true));
+
+CREATE POLICY "Users can insert their own scrape jobs"
+  ON scrape_jobs FOR INSERT
+  WITH CHECK (base_id = current_setting('app.metadata.base_id', true));
+
+CREATE POLICY "Users can update their own scrape jobs"
+  ON scrape_jobs FOR UPDATE
+  USING (base_id = current_setting('app.metadata.base_id', true));
+
+-- Scrape results policies
+CREATE POLICY "Users can view their own scrape results"
+  ON scrape_results FOR SELECT
+  USING (
+    job_id IN (
+      SELECT job_id FROM scrape_jobs 
+      WHERE base_id = current_setting('app.metadata.base_id', true)
+    )
+  );
+
+CREATE POLICY "Users can insert their own scrape results"
+  ON scrape_results FOR INSERT
+  WITH CHECK (
+    job_id IN (
+      SELECT job_id FROM scrape_jobs 
+      WHERE base_id = current_setting('app.metadata.base_id', true)
+    )
+  );
+
+-- Raw scraped profiles policies
+CREATE POLICY "Users can view their own raw profiles"
+  ON raw_scraped_profiles FOR SELECT
+  USING (base_id = current_setting('app.metadata.base_id', true));
+
+CREATE POLICY "Users can insert their own raw profiles"
+  ON raw_scraped_profiles FOR INSERT
+  WITH CHECK (base_id = current_setting('app.metadata.base_id', true));
+
+-- Global usernames policies
+CREATE POLICY "Users can view their own global usernames"
+  ON global_usernames FOR SELECT
+  USING (base_id = current_setting('app.metadata.base_id', true));
+
+CREATE POLICY "Users can insert their own global usernames"
+  ON global_usernames FOR INSERT
+  WITH CHECK (base_id = current_setting('app.metadata.base_id', true));
+
+CREATE POLICY "Users can update their own global usernames"
+  ON global_usernames FOR UPDATE
+  USING (base_id = current_setting('app.metadata.base_id', true));
+
+-- Campaigns policies
+CREATE POLICY "Users can view their own campaigns"
+  ON campaigns FOR SELECT
+  USING (base_id = current_setting('app.metadata.base_id', true));
+
+CREATE POLICY "Users can insert their own campaigns"
+  ON campaigns FOR INSERT
+  WITH CHECK (base_id = current_setting('app.metadata.base_id', true));
+
+CREATE POLICY "Users can update their own campaigns"
+  ON campaigns FOR UPDATE
+  USING (base_id = current_setting('app.metadata.base_id', true));
+
+-- Daily assignments policies
+CREATE POLICY "Users can view their own daily assignments"
+  ON daily_assignments FOR SELECT
+  USING (base_id = current_setting('app.metadata.base_id', true));
+
+CREATE POLICY "Users can insert their own daily assignments"
+  ON daily_assignments FOR INSERT
+  WITH CHECK (base_id = current_setting('app.metadata.base_id', true));
+
+CREATE POLICY "Users can update their own daily assignments"
+  ON daily_assignments FOR UPDATE
+  USING (base_id = current_setting('app.metadata.base_id', true));
+```
+
+<Info>
+**How RLS works in this system:**
+
+1. Client sends `X-Base-Id` header with Airtable base ID
+2. Flask middleware extracts `base_id` from header (`app.py:112-156`)
+3. Server sets `app.metadata.base_id` in database session (`utils/rls_context.py`)
+4. PostgreSQL RLS policies filter queries using `current_setting('app.metadata.base_id')`
+5. All queries are automatically scoped to that base_id
+</Info>
+
+## Database Schema Reference
+
+### scrape_jobs
+
+Tracks asynchronous scraping job status and progress.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `job_id` | UUID | Primary key, auto-generated |
+| `base_id` | TEXT | Multi-tenant identifier (Airtable base ID) |
+| `status` | TEXT | Job status: `queued`, `processing`, `completed`, `failed` |
+| `progress` | NUMERIC | Progress percentage (0.00 to 100.00) |
+| `total_scraped` | INTEGER | Total profiles scraped before filtering |
+| `total_filtered` | INTEGER | Total profiles after gender filtering |
+| `profiles_scraped` | INTEGER | Profiles successfully scraped |
+| `error_message` | TEXT | Error details if status is `failed` |
+| `created_at` | TIMESTAMPTZ | Job creation timestamp |
+| `updated_at` | TIMESTAMPTZ | Last update timestamp |
+| `completed_at` | TIMESTAMPTZ | Job completion timestamp |
+
+**Used in:** `app.py:491-589`, `tasks.py:98-214`
+
+### scrape_results
+
+Stores individual profile results for each scraping job.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `result_id` | UUID | Primary key, auto-generated |
+| `job_id` | UUID | Foreign key to `scrape_jobs.job_id` |
+| `profile_id` | TEXT | Social media profile ID |
+| `username` | TEXT | Username/handle |
+| `full_name` | TEXT | Display name |
+| `created_at` | TIMESTAMPTZ | Record creation timestamp |
+
+**Used in:** `tasks.py:256-278`
+
+### raw_scraped_profiles
+
+Stores all scraped profiles (raw, with duplicates).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | TEXT | Primary key, social media profile ID |
+| `username` | TEXT | Username/handle |
+| `full_name` | TEXT | Display name |
+| `base_id` | TEXT | Multi-tenant identifier |
+| `scraped_at` | TIMESTAMPTZ | Scraping timestamp |
+
+**Used in:** `app.py:682-693`, `utils/batch_processor.py`
+
+### global_usernames
+
+Stores unique profiles ready for campaign assignment.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | TEXT | Primary key, social media profile ID |
+| `username` | TEXT | Username/handle |
+| `full_name` | TEXT | Display name |
+| `used` | BOOLEAN | `true` if already assigned to a campaign |
+| `base_id` | TEXT | Multi-tenant identifier |
+| `created_at` | TIMESTAMPTZ | Record creation timestamp |
+| `used_at` | TIMESTAMPTZ | Timestamp when marked as used |
+
+**Used in:** `app.py:695-721`, `app.py:835-866`
+
+### campaigns
+
+Tracks daily campaigns with assignment metadata.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `campaign_id` | UUID | Primary key, auto-generated |
+| `campaign_date` | DATE | Campaign date |
+| `total_assigned` | INTEGER | Total profiles assigned |
+| `base_id` | TEXT | Multi-tenant identifier |
+| `airtable_base_id` | TEXT | Airtable base ID for sync |
+| `status` | BOOLEAN | `true` = success, `false` = failed |
+| `created_at` | TIMESTAMPTZ | Campaign creation timestamp |
+
+**Used in:** `app.py:818-829`, `app.py:1084-1325`
+
+### daily_assignments
+
+Stores VA table assignments for each campaign.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `assignment_id` | UUID | Primary key, auto-generated |
+| `campaign_id` | UUID | Foreign key to `campaigns.campaign_id` |
+| `va_table_number` | INTEGER | VA table number (1-80) |
+| `position` | INTEGER | Position within table (1-180) |
+| `id` | TEXT | Profile ID |
+| `username` | TEXT | Username/handle |
+| `full_name` | TEXT | Display name |
+| `base_id` | TEXT | Multi-tenant identifier |
+| `status` | TEXT | Assignment status: `pending`, `in_progress`, `completed` |
+| `assigned_at` | TIMESTAMPTZ | Assignment timestamp |
+| `updated_at` | TIMESTAMPTZ | Last update timestamp |
+
+**Used in:** `app.py:869-915`, `app.py:1002-1080`
+
+## Verification Queries
+
+Run these queries to verify your database setup:
+
+```sql
+-- Check all tables exist
+SELECT table_name 
+FROM information_schema.tables 
+WHERE table_schema = 'public' 
+AND table_name IN (
+  'scrape_jobs', 
+  'scrape_results', 
+  'raw_scraped_profiles', 
+  'global_usernames', 
+  'campaigns', 
+  'daily_assignments'
+);
+-- Should return 6 rows
+
+-- Check indexes
+SELECT tablename, indexname 
+FROM pg_indexes 
+WHERE schemaname = 'public'
+ORDER BY tablename, indexname;
+-- Should show indexes for each table
+
+-- Check RLS status
+SELECT tablename, rowsecurity 
+FROM pg_tables 
+WHERE schemaname = 'public';
+-- rowsecurity should be 't' (true) if RLS enabled
+
+-- Check table sizes
+SELECT 
+  schemaname,
+  tablename,
+  pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size
+FROM pg_tables
+WHERE schemaname = 'public'
+ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
+```
+
+## Maintenance
+
+### Cleanup Old Jobs
+
+Run periodically to remove completed jobs older than 30 days:
+
+```sql
+-- Delete old completed jobs (cascades to scrape_results)
+DELETE FROM scrape_jobs
+WHERE status = 'completed'
+AND completed_at < NOW() - INTERVAL '30 days';
+```
+
+### Reset Unused Profiles
+
+If you need to reuse profiles:
+
+```sql
+-- Mark all profiles as unused (careful!)
+UPDATE global_usernames
+SET used = FALSE, used_at = NULL
+WHERE base_id = 'your-base-id';
+```
+
+### Vacuum Database
+
+Reclaim storage after bulk deletes:
+
+```sql
+VACUUM ANALYZE;
+```
+
+## Troubleshooting
+
+### Table Already Exists Error
+
+**Error:** `relation "scrape_jobs" already exists`
+
+**Solution:** Tables already exist. Skip to index creation or verify with:
+```sql
+\dt
+```
+
+### Permission Denied
+
+**Error:** `permission denied for schema public`
+
+**Solution:** Make sure you're using the Supabase SQL Editor with proper admin access.
+
+### RLS Blocking Queries
+
+**Issue:** Queries return 0 rows after enabling RLS
+
+**Solutions:**
+1. Verify `base_id` is being set correctly in the application
+2. Check RLS context in `utils/rls_context.py`
+3. Temporarily bypass RLS for service role:
+   ```sql
+   ALTER TABLE scrape_jobs FORCE ROW LEVEL SECURITY;
+   ```
+
+### Slow Queries
+
+**Issue:** Queries taking 30+ seconds
+
+**Solution:** Verify indexes are created:
+```sql
+SELECT * FROM pg_indexes WHERE tablename = 'global_usernames';
+```
+
+If missing, run the **Performance Indexes SQL** above.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Local Development" icon="laptop-code" href="/setup/local-development">
+    Set up the server for local development
+  </Card>
+  <Card title="Environment Variables" icon="gear" href="/setup/environment-variables">
+    Configure required environment variables
+  </Card>
+</CardGroup>

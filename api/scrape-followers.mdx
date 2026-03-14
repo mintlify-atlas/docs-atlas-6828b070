@@ -1,0 +1,204 @@
+---
+title: 'Scrape Followers'
+description: 'Queue an asynchronous job to scrape followers from social media platforms'
+---
+
+## POST /api/scrape-followers
+
+Queue an asynchronous follower scraping job with multi-platform support. This endpoint initiates background tasks using Celery to scrape follower profiles from Instagram, TikTok, Threads, or X (Twitter).
+
+<Warning>
+**Rate Limited:** 10 requests per hour due to expensive Apify operations at scale.
+</Warning>
+
+### Headers
+
+<ParamField header="X-Base-Id" type="string" required>
+  Airtable base ID for multi-tenant isolation. Format: `appXXXXXXXXXXXXXX` (starts with 'app' followed by alphanumeric characters).
+</ParamField>
+
+<ParamField header="Content-Type" type="string" required>
+  Must be `application/json`
+</ParamField>
+
+### Request Body
+
+<ParamField body="accounts" type="array" required>
+  List of usernames to scrape followers from. Must be a non-empty array.
+  
+  Example: `["username1", "username2", "username3"]`
+</ParamField>
+
+<ParamField body="targetGender" type="string" default="male">
+  Target gender for filtering scraped profiles. Used to filter results based on gender detection.
+  
+  Options: `"male"`, `"female"`, or other gender identifiers
+</ParamField>
+
+<ParamField body="totalScrapeCount" type="integer">
+  Total number of follower profiles to scrape across all accounts. Will be distributed evenly across accounts.
+  
+  - Must be positive
+  - Must be large enough to distribute across accounts (at least 1 per account)
+  - Defaults to 5 per account if not specified
+</ParamField>
+
+<ParamField body="platform" type="string" default="Instagram">
+  Social media platform to scrape from.
+  
+  Supported platforms:
+  - `"Instagram"`
+  - `"TikTok"`
+  - `"Threads"`
+  - `"X"` (formerly Twitter)
+  
+  Case-insensitive.
+</ParamField>
+
+<ParamField body="base_id" type="string">
+  Alternative way to specify base_id (header is preferred). Airtable base ID for multi-tenant isolation.
+  
+  Format: `appXXXXXXXXXXXXXX`
+</ParamField>
+
+### Response
+
+<ResponseField name="success" type="boolean" required>
+  Indicates whether the job was queued successfully.
+</ResponseField>
+
+<ResponseField name="job_id" type="string" required>
+  Unique UUID identifying this scraping job. Use this to poll for status and retrieve results.
+</ResponseField>
+
+<ResponseField name="base_id" type="string" required>
+  The Airtable base ID this job is associated with.
+</ResponseField>
+
+<ResponseField name="platform" type="string" required>
+  The platform being scraped (normalized to lowercase).
+</ResponseField>
+
+<ResponseField name="status_url" type="string" required>
+  Endpoint to poll for job status updates.
+  
+  Format: `/api/job-status/{job_id}`
+</ResponseField>
+
+<ResponseField name="results_url" type="string" required>
+  Endpoint to retrieve job results once completed.
+  
+  Format: `/api/job-results/{job_id}`
+</ResponseField>
+
+<ResponseField name="total_batches" type="integer" required>
+  Number of batches the accounts were split into (batches of 50 accounts each).
+</ResponseField>
+
+<ResponseField name="message" type="string" required>
+  Human-readable message describing the job status.
+</ResponseField>
+
+### Example Request
+
+```bash
+curl -X POST https://your-api.com/api/scrape-followers \
+  -H "Content-Type: application/json" \
+  -H "X-Base-Id: appABC123XYZ456" \
+  -d '{
+    "accounts": ["influencer1", "influencer2", "influencer3"],
+    "targetGender": "male",
+    "totalScrapeCount": 300,
+    "platform": "Instagram"
+  }'
+```
+
+### Example Response
+
+<CodeGroup>
+```json 202 Success
+{
+  "success": true,
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "base_id": "appABC123XYZ456",
+  "platform": "instagram",
+  "status_url": "/api/job-status/550e8400-e29b-41d4-a716-446655440000",
+  "results_url": "/api/job-results/550e8400-e29b-41d4-a716-446655440000",
+  "total_batches": 1,
+  "message": "Instagram scraping job queued successfully. Poll status_url for progress."
+}
+```
+
+```json 400 Bad Request - Missing Accounts
+{
+  "success": false,
+  "error": "Missing \"accounts\" field in request body"
+}
+```
+
+```json 400 Bad Request - Invalid Platform
+{
+  "success": false,
+  "error": "Invalid platform \"facebook\". Must be one of: instagram, tiktok, threads, x"
+}
+```
+
+```json 400 Bad Request - Invalid Base ID
+{
+  "success": false,
+  "error": "Invalid base_id format: invalid-id"
+}
+```
+
+```json 400 Bad Request - Empty Accounts
+{
+  "success": false,
+  "error": "Accounts must be a non-empty list"
+}
+```
+
+```json 400 Bad Request - Total Scrape Count Too Small
+{
+  "success": false,
+  "error": "totalScrapeCount too small for number of accounts"
+}
+```
+
+```json 500 Server Error
+{
+  "success": false,
+  "error": "Internal server error message"
+}
+```
+</CodeGroup>
+
+## Implementation Details
+
+### Batch Processing
+
+Accounts are automatically split into batches of **50 accounts** each. Each batch is processed in parallel using Celery workers, with results aggregated after all batches complete.
+
+### Per-Account Distribution
+
+If `totalScrapeCount` is specified, it's distributed evenly across all accounts:
+
+```
+per_account_count = totalScrapeCount / number_of_accounts
+```
+
+If not specified, defaults to **5 profiles per account**.
+
+### Multi-Tenant Isolation
+
+All jobs are scoped to the provided `base_id` to ensure data isolation between different Airtable bases. The `base_id` must be provided via:
+1. `X-Base-Id` header (preferred)
+2. `base_id` field in request body (alternative)
+
+### Job Lifecycle
+
+1. **Queued** - Job record created in database
+2. **Processing** - Celery tasks executing scraping operations
+3. **Completed** - All batches finished, results aggregated and available
+4. **Failed** - Error occurred during processing
+
+Poll the `status_url` to track job progress and retrieve results from `results_url` when status is `completed`.

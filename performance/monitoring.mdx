@@ -1,0 +1,586 @@
+---
+title: 'Performance Monitoring'
+description: 'Monitor and troubleshoot Click Creators Scraper Server performance in production'
+---
+
+## Overview
+
+Effective monitoring is essential for maintaining optimal performance and catching issues before they impact users. This guide covers real-time monitoring strategies and troubleshooting approaches.
+
+## Key Performance Indicators (KPIs)
+
+### Critical Metrics
+
+| Metric | Target | Warning | Critical |
+|--------|--------|---------|----------|
+| API Response Time | < 200ms | > 500ms | > 1000ms |
+| Database Query Time | < 1s | > 5s | > 30s |
+| Worker Processing Time | 1-2 min/1000 profiles | > 5 min | > 10 min |
+| Memory Usage (per worker) | < 100 MB | > 300 MB | > 450 MB |
+| Redis Queue Length | 0-10 tasks | > 50 tasks | > 100 tasks |
+| Database Size | < 400 MB | > 450 MB | > 490 MB |
+
+<Warning>
+**Alert Thresholds:** Configure alerts for warning levels to prevent critical incidents.
+</Warning>
+
+## Real-Time Monitoring
+
+### Application Logs
+
+#### Heroku/Render Logs
+
+```bash
+# View all logs in real-time
+heroku logs --tail
+
+# Filter by dyno type
+heroku logs --tail --dyno worker  # Worker logs only
+heroku logs --tail --dyno web     # Web API logs only
+
+# Search for errors
+heroku logs | grep ERROR
+heroku logs | grep "Failed to"
+```
+
+#### Log Levels
+
+The application uses Python's logging module with structured output:
+
+```python
+# Logging configuration
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+```
+
+**Log Levels:**
+- `INFO`: Normal operations (job started, batch processed)
+- `WARNING`: Potential issues (rate limit approached, retry attempted)
+- `ERROR`: Failed operations (database error, API failure)
+- `CRITICAL`: System failures (connection lost, out of memory)
+
+**Location:** `app.py:51-56`
+
+### Database Monitoring
+
+#### Check Database Size
+
+```sql
+-- Overall database size
+SELECT pg_size_pretty(pg_database_size(current_database())) as database_size;
+
+-- Size by table
+SELECT 
+    schemaname,
+    tablename,
+    pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size,
+    pg_total_relation_size(schemaname||'.'||tablename) AS bytes
+FROM pg_tables
+WHERE schemaname = 'public'
+ORDER BY bytes DESC
+LIMIT 10;
+```
+
+#### Query Performance
+
+```sql
+-- Check active queries
+SELECT 
+    pid,
+    now() - query_start as duration,
+    state,
+    query
+FROM pg_stat_activity
+WHERE state != 'idle'
+ORDER BY duration DESC;
+
+-- Slow queries (> 1 second)
+SELECT 
+    pid,
+    now() - query_start as duration,
+    query
+FROM pg_stat_activity
+WHERE state = 'active' 
+    AND now() - query_start > interval '1 second'
+ORDER BY duration DESC;
+```
+
+#### Index Usage
+
+```sql
+-- Check if indexes are being used
+SELECT 
+    schemaname,
+    tablename,
+    indexname,
+    idx_scan as index_scans,
+    idx_tup_read as tuples_read,
+    idx_tup_fetch as tuples_fetched
+FROM pg_stat_user_indexes
+ORDER BY idx_scan DESC;
+
+-- Find missing indexes (sequential scans)
+SELECT 
+    schemaname,
+    tablename,
+    seq_scan,
+    seq_tup_read,
+    idx_scan,
+    seq_tup_read / seq_scan as avg_seq_tup
+FROM pg_stat_user_tables
+WHERE seq_scan > 0
+ORDER BY seq_tup_read DESC
+LIMIT 10;
+```
+
+<Info>
+If `seq_scan` is high and `idx_scan` is low, you may be missing important indexes. See the database indexes requirements in the source code.
+</Info>
+
+### Redis Monitoring
+
+#### Queue Length
+
+```bash
+# Connect to Redis CLI
+heroku redis:cli
+
+# Check queue length
+LLEN celery  # Default queue
+LLEN scraping  # Scraping queue
+LLEN processing  # Processing queue
+
+# View pending tasks
+LRANGE celery 0 10  # First 10 tasks
+```
+
+#### Memory Usage
+
+```bash
+# Redis memory info
+INFO memory
+
+# Key metrics:
+# - used_memory_human: Current memory usage
+# - maxmemory_human: Maximum memory allowed
+# - mem_fragmentation_ratio: Memory fragmentation
+```
+
+#### Connection Count
+
+```bash
+# Check connected clients
+INFO clients
+
+# Expected:
+# - connected_clients: 5-10 (1 web + 1-4 workers)
+```
+
+### Celery Worker Monitoring
+
+#### Active Tasks
+
+```bash
+# View active Celery workers
+celery -A celery_config inspect active
+
+# View registered tasks
+celery -A celery_config inspect registered
+
+# View worker statistics
+celery -A celery_config inspect stats
+```
+
+#### Task Success/Failure Rates
+
+```bash
+# Query Supabase for job statistics
+SELECT 
+    status,
+    COUNT(*) as count,
+    AVG(profiles_scraped) as avg_profiles,
+    AVG(EXTRACT(EPOCH FROM (completed_at - created_at))) as avg_duration_seconds
+FROM scrape_jobs
+WHERE created_at > NOW() - INTERVAL '24 hours'
+GROUP BY status;
+```
+
+**Expected Results:**
+- `completed`: > 95%
+- `failed`: < 5%
+- `processing`: 0-2 (should complete quickly)
+
+### API Response Time Monitoring
+
+#### Application Performance Monitoring (APM)
+
+The application includes Sentry integration for error tracking and performance monitoring.
+
+```python
+# Sentry configuration
+if os.getenv('SENTRY_DSN'):
+    sentry_sdk.init(
+        dsn=os.getenv('SENTRY_DSN'),
+        integrations=[
+            FlaskIntegration(),
+            CeleryIntegration()
+        ],
+        traces_sample_rate=0.1,  # 10% performance monitoring
+        environment=os.getenv('FLASK_ENV', 'development'),
+    )
+```
+
+**Location:** `app.py:61-74`
+
+#### Manual Response Time Checks
+
+```bash
+# Test API response time
+time curl -X POST https://your-app.herokuapp.com/api/scrape-followers \
+  -H "Content-Type: application/json" \
+  -d '{"accounts":["test"],"totalScrapeCount":10}'
+
+# Expected: < 0.2 seconds (200ms)
+```
+
+## Performance Testing
+
+### Load Testing Script
+
+<Accordion title="Example Load Test">
+```python
+import time
+import requests
+import statistics
+
+def load_test_api(num_requests=100):
+    """
+    Test API response time under load.
+    """
+    url = "https://your-app.herokuapp.com/api/scrape-followers"
+    payload = {
+        "accounts": ["test_account"],
+        "totalScrapeCount": 10
+    }
+    
+    response_times = []
+    
+    for i in range(num_requests):
+        start = time.time()
+        response = requests.post(url, json=payload)
+        duration = (time.time() - start) * 1000  # Convert to ms
+        response_times.append(duration)
+        
+        if i % 10 == 0:
+            print(f"Request {i+1}/{num_requests}: {duration:.2f}ms")
+        
+        time.sleep(0.1)  # Rate limiting
+    
+    print(f"\nResults:")
+    print(f"Mean: {statistics.mean(response_times):.2f}ms")
+    print(f"Median: {statistics.median(response_times):.2f}ms")
+    print(f"Min: {min(response_times):.2f}ms")
+    print(f"Max: {max(response_times):.2f}ms")
+    print(f"Std Dev: {statistics.stdev(response_times):.2f}ms")
+
+if __name__ == "__main__":
+    load_test_api(100)
+```
+</Accordion>
+
+### Database Performance Testing
+
+```sql
+-- Test profile lookup performance (should be < 1s)
+EXPLAIN ANALYZE
+SELECT * FROM global_usernames
+WHERE used = false
+LIMIT 14400;
+
+-- Test campaign query performance (should be < 1s)
+EXPLAIN ANALYZE
+SELECT * FROM daily_assignments
+WHERE campaign_id = 'test-campaign-id'
+ORDER BY va_table_number, position;
+
+-- Check index usage (should use Index Scan, not Seq Scan)
+EXPLAIN ANALYZE
+SELECT * FROM global_usernames
+WHERE id IN ('id1', 'id2', 'id3');
+```
+
+<Note>
+If you see `Seq Scan` instead of `Index Scan`, indexes are missing or not being used. This can cause 30-60 second query times.
+</Note>
+
+## Error Tracking with Sentry
+
+### Setup
+
+```bash
+# Set Sentry DSN environment variable
+heroku config:set SENTRY_DSN=https://your-sentry-dsn@sentry.io/project-id
+```
+
+### Key Sentry Features
+
+1. **Error Grouping:** Automatically groups similar errors
+2. **Performance Monitoring:** Tracks slow transactions (10% sample rate)
+3. **Release Tracking:** Associates errors with code versions
+4. **User Context:** Captures request details and user info
+
+### Common Errors to Monitor
+
+| Error Type | Cause | Solution |
+|------------|-------|----------|
+| `ConnectionError` | Database/Redis unavailable | Check service status, verify credentials |
+| `TimeoutError` | Apify scraper timeout | Increase task time limit, check Apify status |
+| `MemoryError` | Worker out of memory | Reduce batch size, restart workers |
+| `IntegrityError` | Duplicate database insertion | Check duplicate detection logic |
+
+## Alerting Strategies
+
+### Critical Alerts (Immediate Action)
+
+<Warning>
+These issues require immediate attention:
+</Warning>
+
+1. **API Down:** Health check endpoint not responding
+2. **Database Full:** > 490 MB (approaching 500 MB limit)
+3. **Worker Crash:** All workers stopped
+4. **Memory Quota Exceeded:** R14 errors on Heroku
+5. **Redis Full:** > 24 MB (approaching 25 MB limit)
+
+### Warning Alerts (Monitor Closely)
+
+<Info>
+These issues indicate potential problems:
+</Info>
+
+1. **High Response Time:** API > 500ms consistently
+2. **Long Queue:** > 50 tasks in Redis queue
+3. **High Failure Rate:** > 10% of jobs failing
+4. **Slow Queries:** > 5 seconds consistently
+5. **High Memory:** > 300 MB per worker
+
+### Alert Configuration Examples
+
+#### Heroku Alerts
+
+```bash
+# Set up Heroku alerts via dashboard or CLI
+heroku labs:enable runtime-dyno-metadata
+
+# Monitor dyno metrics (requires add-on)
+heroku addons:create librato:development
+```
+
+#### Sentry Alerts
+
+```yaml
+# Sentry alert rules (configured in Sentry dashboard)
+alerts:
+  - name: High Error Rate
+    condition: error_count > 10 in 5 minutes
+    actions:
+      - email: dev-team@example.com
+  
+  - name: Slow API Response
+    condition: p95_duration > 1000ms
+    actions:
+      - slack: #alerts
+```
+
+## Troubleshooting Common Issues
+
+### Issue: API Response Time > 1s
+
+**Diagnosis:**
+```bash
+# Check for slow database queries
+heroku logs --tail | grep "slow query"
+
+# Test API directly
+time curl https://your-app.herokuapp.com/health
+```
+
+**Solutions:**
+1. Verify database indexes exist
+2. Check Supabase performance metrics
+3. Review recent code changes
+4. Scale up web dyno
+
+### Issue: Jobs Stuck in "Processing"
+
+**Diagnosis:**
+```bash
+# Check worker logs
+heroku logs --tail --dyno worker
+
+# Check Redis queue length
+heroku redis:cli
+> LLEN celery
+```
+
+**Solutions:**
+1. Restart Celery workers: `heroku restart worker`
+2. Clear stuck tasks: `celery -A celery_config purge`
+3. Check for worker errors in logs
+4. Verify Apify API status
+
+### Issue: Database Queries > 30s
+
+**Diagnosis:**
+```sql
+-- Check for missing indexes
+SELECT 
+    tablename,
+    indexname,
+    indexdef
+FROM pg_indexes
+WHERE schemaname = 'public'
+ORDER BY tablename;
+```
+
+**Solutions:**
+1. Create missing indexes (see Performance Optimizations)
+2. Analyze query plans with `EXPLAIN ANALYZE`
+3. Reduce batch size if bulk operations are slow
+4. Consider upgrading Supabase tier
+
+### Issue: Memory Quota Exceeded (R14)
+
+**Diagnosis:**
+```bash
+# Check for memory leaks
+heroku logs | grep "Error R14"
+
+# Monitor memory over time
+heroku logs --tail | grep "source=web.1.*sample#memory_total"
+```
+
+**Solutions:**
+1. Verify connection pooling (singleton pattern)
+2. Check for DataFrame cleanup in scraper
+3. Reduce worker `max_tasks_per_child`
+4. Upgrade to Standard dyno (1 GB RAM)
+
+### Issue: Redis Queue Growing
+
+**Diagnosis:**
+```bash
+# Check queue length
+heroku redis:cli
+> LLEN celery
+
+# Check worker count
+heroku ps
+```
+
+**Solutions:**
+1. Scale up workers: `heroku ps:scale worker=4`
+2. Check for worker errors
+3. Verify workers are consuming tasks
+4. Clear queue if corrupted: `celery -A celery_config purge`
+
+## Monitoring Dashboard Template
+
+### Key Metrics to Display
+
+<Accordion title="Recommended Dashboard Widgets">
+1. **API Health**
+   - Health check status (up/down)
+   - Average response time (5min window)
+   - Request rate (requests/min)
+
+2. **Database Metrics**
+   - Database size (MB)
+   - Active connections
+   - Slow query count (> 5s)
+
+3. **Worker Performance**
+   - Active workers
+   - Queue length
+   - Job completion rate
+   - Average processing time
+
+4. **Resource Usage**
+   - Memory usage (web + workers)
+   - Redis memory usage
+   - Database connection pool
+
+5. **Error Rates**
+   - Failed jobs (last hour)
+   - 5xx errors (last hour)
+   - Sentry error count
+</Accordion>
+
+### Tools for Dashboards
+
+- **Grafana:** Self-hosted dashboard (free)
+- **Datadog:** Full-featured APM (paid)
+- **New Relic:** Application monitoring (free tier available)
+- **Sentry:** Error tracking with performance monitoring (free tier)
+- **Supabase Dashboard:** Built-in database monitoring
+
+## Proactive Maintenance
+
+### Daily Checks
+
+```bash
+# Quick health check script
+#!/bin/bash
+
+echo "=== Daily Health Check ==="
+echo ""
+
+echo "1. API Health:"
+curl -s https://your-app.herokuapp.com/health | jq
+
+echo ""
+echo "2. Redis Queue Length:"
+heroku redis:cli --app your-app --confirm your-app <<< "LLEN celery"
+
+echo ""
+echo "3. Recent Errors:"
+heroku logs --tail --num 100 | grep ERROR | tail -5
+
+echo ""
+echo "4. Worker Status:"
+heroku ps --app your-app | grep worker
+```
+
+### Weekly Checks
+
+1. **Database Size:** Verify < 400 MB
+2. **Failed Jobs:** Review and investigate failures
+3. **Slow Queries:** Analyze and optimize
+4. **Error Trends:** Check Sentry for new error patterns
+5. **Resource Usage:** Plan for scaling needs
+
+### Monthly Checks
+
+1. **Performance Benchmarks:** Run load tests
+2. **Data Cleanup:** Delete old raw_scraped_profiles
+3. **Index Optimization:** Review and add new indexes
+4. **Cost Review:** Analyze usage and optimize
+5. **Dependency Updates:** Update packages and security patches
+
+<Tip>
+Schedule these checks as recurring tasks in your team's project management tool to ensure they don't get overlooked.
+</Tip>
+
+## Performance Optimization Workflow
+
+1. **Identify:** Use monitoring to find bottlenecks
+2. **Measure:** Establish baseline metrics
+3. **Optimize:** Implement targeted improvements
+4. **Test:** Verify performance gains
+5. **Monitor:** Track metrics over time
+6. **Iterate:** Repeat for next bottleneck
+
+See [Performance Optimizations](/performance/optimizations) for detailed optimization strategies.

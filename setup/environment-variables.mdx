@@ -1,0 +1,498 @@
+---
+title: "Environment Variables"
+description: "Complete reference for all environment variables used in the Click Creators Scraper Server"
+---
+
+## Overview
+
+The scraper server uses environment variables for configuration. All variables are loaded from a `.env` file in the `server/` directory.
+
+<Warning>
+Never commit your `.env` file to version control. It contains sensitive credentials.
+</Warning>
+
+## Required Variables
+
+These variables are **required** for the server to function:
+
+### Flask Configuration
+
+<ParamField path="FLASK_ENV" type="string" required>
+  Flask environment mode. Controls debug mode and error handling.
+  
+  - `development` - Enables debug mode, hot reload, verbose errors
+  - `production` - Disables debug, optimizes performance, minimal logging
+  
+  **Example:**
+  ```bash
+  FLASK_ENV=development
+  ```
+</ParamField>
+
+<ParamField path="PORT" type="integer" default="5001">
+  Port number for the Flask API server.
+  
+  **Example:**
+  ```bash
+  PORT=5001
+  ```
+  
+  <Note>
+  Heroku and Render automatically set `PORT`. Don't hardcode this in production.
+  </Note>
+</ParamField>
+
+<ParamField path="SECRET_KEY" type="string" required>
+  Flask secret key for session management and security features.
+  
+  **Generate a secure key:**
+  ```bash
+  python -c "import secrets; print(secrets.token_hex(32))"
+  ```
+  
+  **Example:**
+  ```bash
+  SECRET_KEY=a7f3d8e9c2b1a4f6e8d9c0b2a5f7e9d1c3b5a7f9e1d3c5b7a9f1e3d5c7b9a1f3
+  ```
+  
+  <Warning>
+  Use different keys for development and production. Never use `dev-secret-key` in production.
+  </Warning>
+</ParamField>
+
+<ParamField path="API_SECRET_KEY" type="string" required>
+  API authentication key for protected endpoints (if implemented).
+  
+  **Example:**
+  ```bash
+  API_SECRET_KEY=sk_live_abc123def456ghi789
+  ```
+</ParamField>
+
+### Redis Configuration
+
+<ParamField path="REDIS_URL" type="string" required>
+  Redis connection URL for Celery message broker and result backend.
+  
+  **Local development:**
+  ```bash
+  REDIS_URL=redis://localhost:6379/0
+  ```
+  
+  **Heroku Redis:**
+  ```bash
+  REDIS_URL=redis://h:p123abc@ec2-1-2-3-4.compute-1.amazonaws.com:6379
+  ```
+  
+  **Render Redis (with SSL):**
+  ```bash
+  REDIS_URL=rediss://red-abc123:6379
+  ```
+  
+  <Info>
+  The server automatically converts `redis://` to `rediss://` for production SSL connections.
+  </Info>
+</ParamField>
+
+### Supabase Configuration
+
+<ParamField path="SUPABASE_URL" type="string" required>
+  Your Supabase project URL.
+  
+  **Find it:** Supabase Dashboard → Project Settings → API → Project URL
+  
+  **Example:**
+  ```bash
+  SUPABASE_URL=https://abcdefghijklmnop.supabase.co
+  ```
+</ParamField>
+
+<ParamField path="SUPABASE_SERVICE_ROLE_KEY" type="string" required>
+  Supabase service role key with full database access. Bypasses RLS policies.
+  
+  **Find it:** Supabase Dashboard → Project Settings → API → service_role key
+  
+  **Example:**
+  ```bash
+  SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+  ```
+  
+  <Warning>
+  This key has **admin access** to your database. Never expose it in client-side code or commit it to Git.
+  </Warning>
+</ParamField>
+
+<ParamField path="SUPABASE_POOL_SIZE" type="integer" default="5">
+  Number of database connections per process.
+  
+  **Recommendations:**
+  - Free tier: `5` (safe for 1 web + 1 worker)
+  - Paid tier: `10-20` (for multiple workers)
+  
+  **Example:**
+  ```bash
+  SUPABASE_POOL_SIZE=5
+  ```
+  
+  <Note>
+  Supabase Free tier has a 50 connection limit. With 1 web dyno + 1 worker dyno, each using 5 connections = 10 total (safe).
+  </Note>
+</ParamField>
+
+### Apify Configuration
+
+<ParamField path="APIFY_API_KEY" type="string" required>
+  Apify API token for scraping operations.
+  
+  **Find it:** Apify Console → Settings → Integrations → API Token
+  
+  **Example:**
+  ```bash
+  APIFY_API_KEY=apify_api_abcd1234efgh5678ijkl9012mnop3456
+  ```
+</ParamField>
+
+<ParamField path="INSTAGRAM_APIFY_ACTOR_ID" type="string" required>
+  Apify Actor ID for Instagram scraping.
+  
+  **Recommended Actor:** `apify/instagram-profile-scraper`
+  
+  **Example:**
+  ```bash
+  INSTAGRAM_APIFY_ACTOR_ID=apify/instagram-profile-scraper
+  ```
+</ParamField>
+
+<ParamField path="TIKTOK_APIFY_ACTOR_ID" type="string">
+  Apify Actor ID for TikTok scraping (optional).
+  
+  **Example:**
+  ```bash
+  TIKTOK_APIFY_ACTOR_ID=apify/tiktok-scraper
+  ```
+</ParamField>
+
+<ParamField path="THREADS_APIFY_ACTOR_ID" type="string">
+  Apify Actor ID for Threads scraping (optional).
+  
+  **Example:**
+  ```bash
+  THREADS_APIFY_ACTOR_ID=apify/threads-scraper
+  ```
+</ParamField>
+
+<ParamField path="X_APIFY_ACTOR_ID" type="string">
+  Apify Actor ID for X/Twitter scraping (optional).
+  
+  **Example:**
+  ```bash
+  X_APIFY_ACTOR_ID=apify/twitter-scraper
+  ```
+</ParamField>
+
+### Airtable Configuration
+
+<ParamField path="AIRTABLE_ACCESS_TOKEN" type="string" required>
+  Airtable Personal Access Token for API access.
+  
+  **Generate:** Airtable → Account → Developer Hub → Personal Access Tokens
+  
+  **Scopes needed:**
+  - `data.records:read`
+  - `data.records:write`
+  - `schema.bases:read`
+  - `schema.bases:write`
+  
+  **Example:**
+  ```bash
+  AIRTABLE_ACCESS_TOKEN=patAbcDef123Ghi456Jkl789Mno012Pqr345Stu678Vwx901Yza234
+  ```
+</ParamField>
+
+<ParamField path="AIRTABLE_BASE_ID" type="string" required>
+  Default Airtable Base ID for campaign distribution.
+  
+  **Find it:** Open your Airtable base → URL contains `app...`
+  
+  **Example:**
+  ```bash
+  AIRTABLE_BASE_ID=appAbc123Def456Ghi
+  ```
+  
+  <Info>
+  This can be overridden per request using the `X-Base-Id` header for multi-tenant setups.
+  </Info>
+</ParamField>
+
+<ParamField path="NUM_VA_TABLES" type="integer" default="80">
+  Number of VA (Virtual Assistant) tables in your Airtable base.
+  
+  **Example:**
+  ```bash
+  NUM_VA_TABLES=80
+  ```
+  
+  <Note>
+  This determines how many tables profiles are distributed across. If you have 80 VA tables with 180 profiles each = 14,400 total profiles per campaign.
+  </Note>
+</ParamField>
+
+## Optional Variables
+
+### CORS Configuration
+
+<ParamField path="ALLOWED_ORIGINS" type="string" default="*">
+  Comma-separated list of allowed CORS origins.
+  
+  **Example:**
+  ```bash
+  ALLOWED_ORIGINS=http://localhost:3000,https://yourapp.com,https://www.yourapp.com
+  ```
+  
+  <Warning>
+  Use `*` only for development. In production, specify exact origins to prevent unauthorized access.
+  </Warning>
+</ParamField>
+
+### Error Tracking
+
+<ParamField path="SENTRY_DSN" type="string">
+  Sentry DSN for error tracking and monitoring.
+  
+  **Find it:** Sentry Dashboard → Project Settings → Client Keys (DSN)
+  
+  **Example:**
+  ```bash
+  SENTRY_DSN=https://abc123def456@o789012.ingest.sentry.io/3456789
+  ```
+  
+  <Info>
+  If not set, Sentry will be disabled and errors will only be logged to console.
+  </Info>
+</ParamField>
+
+<ParamField path="APP_VERSION" type="string" default="1.0.0">
+  Application version for Sentry release tracking.
+  
+  **Example:**
+  ```bash
+  APP_VERSION=1.2.3
+  ```
+</ParamField>
+
+## Environment Templates
+
+### Development Template
+
+```bash .env.development
+# Flask Configuration
+FLASK_ENV=development
+PORT=5001
+SECRET_KEY=dev-secret-key-change-in-production
+API_SECRET_KEY=dev-api-key-change-in-production
+APP_VERSION=1.0.0
+
+# Redis (Local)
+REDIS_URL=redis://localhost:6379/0
+
+# Supabase (REQUIRED - Update these!)
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+SUPABASE_POOL_SIZE=5
+
+# Apify (REQUIRED - Update these!)
+APIFY_API_KEY=your-apify-api-key
+INSTAGRAM_APIFY_ACTOR_ID=apify/instagram-profile-scraper
+TIKTOK_APIFY_ACTOR_ID=apify/tiktok-scraper
+THREADS_APIFY_ACTOR_ID=apify/threads-scraper
+X_APIFY_ACTOR_ID=apify/twitter-scraper
+
+# Airtable (REQUIRED - Update these!)
+AIRTABLE_ACCESS_TOKEN=your-airtable-token
+AIRTABLE_BASE_ID=your-base-id
+NUM_VA_TABLES=80
+
+# CORS
+ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5001
+
+# Sentry (Optional)
+# SENTRY_DSN=your-sentry-dsn
+```
+
+### Production Template
+
+```bash .env.production
+# Flask Configuration
+FLASK_ENV=production
+PORT=5000
+SECRET_KEY=<generate-secure-key>
+API_SECRET_KEY=<generate-secure-key>
+APP_VERSION=1.0.0
+
+# Redis (Auto-set by Heroku/Render)
+REDIS_URL=${REDIS_URL}
+
+# Supabase
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=<production-key>
+SUPABASE_POOL_SIZE=10
+
+# Apify
+APIFY_API_KEY=<production-key>
+INSTAGRAM_APIFY_ACTOR_ID=apify/instagram-profile-scraper
+TIKTOK_APIFY_ACTOR_ID=apify/tiktok-scraper
+THREADS_APIFY_ACTOR_ID=apify/threads-scraper
+X_APIFY_ACTOR_ID=apify/twitter-scraper
+
+# Airtable
+AIRTABLE_ACCESS_TOKEN=<production-token>
+AIRTABLE_BASE_ID=<production-base-id>
+NUM_VA_TABLES=80
+
+# CORS
+ALLOWED_ORIGINS=https://yourapp.com,https://www.yourapp.com
+
+# Sentry
+SENTRY_DSN=https://abc@o123.ingest.sentry.io/456
+```
+
+## Setting Variables in Production
+
+### Heroku
+
+```bash
+# Set single variable
+heroku config:set FLASK_ENV=production
+
+# Set multiple variables
+heroku config:set \
+  SUPABASE_URL=https://... \
+  SUPABASE_SERVICE_ROLE_KEY=eyJ... \
+  APIFY_API_KEY=apify_api_...
+
+# View all variables
+heroku config
+
+# View specific variable
+heroku config:get REDIS_URL
+```
+
+### Render
+
+1. Go to your service in Render Dashboard
+2. Navigate to **Environment** tab
+3. Click **Add Environment Variable**
+4. Enter key and value
+5. Click **Save Changes**
+
+Or use `render.yaml`:
+
+```yaml render.yaml
+services:
+  - type: web
+    name: scraper-api
+    env: python
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: SUPABASE_URL
+        sync: false  # Manual entry required
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          name: scraper-redis
+          type: redis
+          property: connectionString
+```
+
+## Validation
+
+The server validates required environment variables on startup:
+
+```python
+# From app.py:190-194
+supabase_url = os.getenv('SUPABASE_URL')
+supabase_key = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
+
+if not supabase_url or not supabase_key:
+    raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables are required.")
+```
+
+**Startup checks:**
+- `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` - Required for database
+- `APIFY_API_KEY` - Required for scraping (checked when first scrape job runs)
+- `REDIS_URL` - Required for Celery (defaults to localhost)
+- `AIRTABLE_ACCESS_TOKEN` - Required for Airtable sync (checked when sync runs)
+
+## Security Best Practices
+
+<Warning>
+**Critical Security Rules:**
+
+1. **Never commit `.env` to Git**
+   ```bash
+   echo ".env" >> .gitignore
+   ```
+
+2. **Use different credentials for dev and prod**
+   - Development: Use test/sandbox accounts
+   - Production: Use production credentials with proper access controls
+
+3. **Rotate keys regularly**
+   - Rotate Supabase service key every 90 days
+   - Rotate Apify API key if exposed
+   - Rotate Airtable token annually
+
+4. **Limit access scope**
+   - Airtable: Only grant necessary scopes
+   - Supabase: Use service_role key only in backend
+   - Redis: Enable authentication in production
+
+5. **Monitor for leaks**
+   - Use GitHub secret scanning
+   - Check Sentry for exposed keys in error logs
+   - Audit access logs regularly
+</Warning>
+
+## Troubleshooting
+
+### Variables Not Loading
+
+**Issue:** Server can't find environment variables
+
+**Solutions:**
+1. Verify `.env` file is in the correct directory (`server/.env`)
+2. Check for syntax errors (no spaces around `=`)
+3. Restart the server after changes
+4. Verify virtual environment is activated
+
+### Redis SSL Issues
+
+**Error:** `SSL: CERTIFICATE_VERIFY_FAILED`
+
+**Solution:** The server automatically handles this in `celery_config.py:23-26`:
+```python
+broker_use_ssl = {
+    'ssl_cert_reqs': ssl.CERT_NONE
+}
+```
+
+### Supabase Connection Errors
+
+**Error:** `401 Unauthorized` or `Invalid API key`
+
+**Solutions:**
+1. Verify you're using `SUPABASE_SERVICE_ROLE_KEY` (not anon key)
+2. Check key hasn't been rotated in Supabase dashboard
+3. Ensure no extra whitespace in `.env` value
+
+## Reference
+
+See these files for environment variable usage:
+- `app.py:61-74` - Sentry configuration
+- `app.py:85-92` - CORS origins
+- `app.py:190-221` - Supabase client
+- `celery_config.py:12-26` - Redis URL and SSL
+- `tasks.py:51-60` - Supabase in Celery tasks
+- `utils/scraper.py:44-50` - Apify actor IDs

@@ -1,0 +1,123 @@
+---
+title: 'Airtable Sync'
+description: 'Sync campaign assignments to Airtable tables for VA processing'
+---
+
+## POST /api/airtable-sync/:campaign_id
+
+Sync campaign assignments to Airtable tables after distribution. This endpoint fetches distributed profiles from `daily_assignments` and pushes them to Airtable VA tables.
+
+### URL Parameters
+
+<ParamField path="campaign_id" type="string" required>
+  UUID of the campaign to sync to Airtable
+</ParamField>
+
+### Headers
+
+<ParamField header="X-Base-Id" type="string" required>
+  Airtable base ID for multi-tenant isolation (format: `appXXXXXXXXXX`)
+</ParamField>
+
+### Request Body
+
+<ParamField body="base_id" type="string">
+  Alternative way to pass base_id (if not using header). Defaults to campaign's stored base_id.
+</ParamField>
+
+<ParamField body="airtable_base_id" type="string">
+  Airtable base ID to sync to. If not provided, retrieves from campaign metadata.
+</ParamField>
+
+### Response
+
+<ResponseField name="success" type="boolean" required>
+  Whether the sync operation completed successfully
+</ResponseField>
+
+<ResponseField name="campaign_id" type="string" required>
+  UUID of the synced campaign
+</ResponseField>
+
+<ResponseField name="base_id" type="string" required>
+  Base ID used for the operation
+</ResponseField>
+
+<ResponseField name="tables_synced" type="number" required>
+  Number of Airtable VA tables successfully synced
+</ResponseField>
+
+<ResponseField name="records_synced" type="number" required>
+  Total number of profile records synced to Airtable
+</ResponseField>
+
+<ResponseField name="campaign_status" type="boolean" required>
+  Campaign status after sync (true if all tables synced successfully)
+</ResponseField>
+
+### Example Request
+
+```bash
+curl -X POST https://api.example.com/api/airtable-sync/550e8400-e29b-41d4-a716-446655440000 \
+  -H "Content-Type: application/json" \
+  -H "X-Base-Id: appABC123XYZ456" \
+  -d '{
+    "airtable_base_id": "appABC123XYZ456"
+  }'
+```
+
+### Example Response
+
+```json
+{
+  "success": true,
+  "campaign_id": "550e8400-e29b-41d4-a716-446655440000",
+  "base_id": "appABC123XYZ456",
+  "tables_synced": 80,
+  "records_synced": 14400,
+  "campaign_status": true
+}
+```
+
+### Error Response
+
+```json
+{
+  "success": false,
+  "error": "Campaign 550e8400-e29b-41d4-a716-446655440000 not found for base_id=appABC123XYZ456"
+}
+```
+
+## Behavior Details
+
+### Sync Process
+
+1. **Validation**: Verifies campaign exists and has distributed assignments (va_table_number > 0)
+2. **Grouping**: Groups profiles by VA table number
+3. **Batch Upload**: Syncs profiles to Airtable tables in batches of 10 (rate-limited)
+4. **Status Update**: Updates campaign status to `true` if all tables sync successfully
+
+### Retry Logic
+
+- **Max Retries**: 3 attempts per batch
+- **Backoff**: Exponential backoff (1s, 2s, 4s)
+- **Rate Limiting**: 0.2s delay between batches (5 requests/second)
+
+### Airtable Table Format
+
+Records are created in tables named `Daily_Outreach_Table_01` through `Daily_Outreach_Table_XX` with fields:
+
+- `id`: Instagram profile ID
+- `username`: Instagram username
+- `full_name`: User's full name
+- `position`: Position within VA table (1-180)
+- `campaign_date`: Campaign date (YYYY-MM-DD)
+- `progress_status`: Initial status ("pending")
+
+<Note>
+  This endpoint should be called after `/api/distribute/:campaign_id` has successfully assigned profiles to VA tables.
+</Note>
+
+<Warning>
+  The campaign status is set to `true` only if the number of tables synced equals the expected number of VA tables AND at least one record was synced. Partial syncs result in `campaign_status: false`.
+</Warning>

@@ -1,0 +1,530 @@
+---
+title: 'Scraper Utilities'
+description: 'Multi-platform social media scraping with Apify integration for Instagram, TikTok, Threads, and X (Twitter)'
+---
+
+## Overview
+
+The scraper utilities provide robust, production-ready social media scraping capabilities using the Apify platform. Built for scale, these utilities handle 500K+ profiles with advanced retry logic, exponential backoff, and platform-specific optimizations.
+
+<Info>
+**Supported Platforms**: Instagram, TikTok, Threads, X (Twitter)
+</Info>
+
+## Core Functions
+
+### get_actor_id_for_platform
+
+Retrieves the appropriate Apify actor ID for a specified social media platform.
+
+```python utils/scraper.py
+def get_actor_id_for_platform(platform: str = 'instagram') -> str:
+    """
+    Get the appropriate Apify actor ID for the specified platform.
+    
+    Args:
+        platform: Social media platform (instagram, threads, tiktok, x)
+        
+    Returns:
+        Apify actor ID for the platform
+        
+    Raises:
+        ValueError: If platform is unsupported or actor ID not configured
+    """
+```
+
+#### Platform Environment Variables
+
+| Platform | Environment Variable | Fallback |
+|----------|---------------------|----------|
+| Instagram | `INSTAGRAM_APIFY_ACTOR_ID` | `APIFY_ACTOR_ID` |
+| TikTok | `TIKTOK_APIFY_ACTOR_ID` | None |
+| Threads | `THREADS_APIFY_ACTOR_ID` | None |
+| X (Twitter) | `X_APIFY_ACTOR_ID` | None |
+
+#### Usage Example
+
+```python
+from utils.scraper import get_actor_id_for_platform
+
+# Get Instagram actor ID
+instagram_actor = get_actor_id_for_platform('instagram')
+
+# Get TikTok actor ID
+tiktok_actor = get_actor_id_for_platform('tiktok')
+
+# Get Threads actor ID
+threads_actor = get_actor_id_for_platform('threads')
+
+# Get X/Twitter actor ID
+x_actor = get_actor_id_for_platform('x')
+```
+
+<Warning>
+Ensure all required environment variables are set before calling this function. Missing actor IDs will raise a `ValueError`.
+</Warning>
+
+---
+
+### scrape_followers
+
+Main scraping function with advanced retry logic and platform-specific handling.
+
+```python utils/scraper.py
+def scrape_followers(
+    accounts: List[str], 
+    max_count: int = 5, 
+    max_retries: int = 3,
+    platform: str = 'instagram'
+) -> Dict[str, Dict]:
+    """
+    Scrape followers from specified social media accounts using Apify with retry logic.
+    
+    OPTIMIZED FOR 500K+ SCALE:
+    - Exponential backoff retry for rate limiting
+    - Handles Apify API failures gracefully
+    - Automatic retry on network errors
+    - Multi-platform support (Instagram, TikTok, Threads, X)
+    """
+```
+
+#### Parameters
+
+<Accordion title="accounts: List[str]">
+List of account usernames to scrape followers from. Platform-specific formats:
+- **Instagram/Threads**: Username without @ (e.g., `"username"`)
+- **TikTok**: Username with or without @ (e.g., `"@username"` or `"username"`)
+- **X/Twitter**: Screen name without @ (e.g., `"username"`)
+</Accordion>
+
+<Accordion title="max_count: int (default: 5)">
+Maximum number of followers to scrape per account. Use higher values for comprehensive scraping:
+- Development: 5-10
+- Testing: 50-100
+- Production: 500-1000+
+</Accordion>
+
+<Accordion title="max_retries: int (default: 3)">
+Maximum retry attempts for failed requests. Retry delay uses exponential backoff:
+- Attempt 1: 0s delay
+- Attempt 2: 2s delay
+- Attempt 3: 8s delay
+- Attempt 4: 32s delay
+</Accordion>
+
+<Accordion title="platform: str (default: 'instagram')">
+Target social media platform. Supported values:
+- `'instagram'`
+- `'tiktok'`
+- `'threads'`
+- `'x'` (Twitter/X)
+</Accordion>
+
+#### Return Value
+
+Returns a dictionary mapping each follower username to their profile data:
+
+```python
+{
+    "username1": {
+        "id": "123456789",
+        "username": "username1",
+        "full_name": "John Doe",
+        "follower_count": 1500,
+        "following_count": 800,
+        "posts_count": 42
+    },
+    "username2": {
+        "id": "987654321",
+        "username": "username2",
+        "full_name": "Jane Smith",
+        "follower_count": 3200,
+        "following_count": 1200,
+        "posts_count": 156
+    }
+}
+```
+
+#### Platform-Specific Field Mapping
+
+<Accordion title="Instagram Fields">
+```python
+{
+    'username': str,        # Instagram username
+    'full_name': str,       # Display name
+    'follower_count': int,  # Number of followers
+    'following_count': int, # Number following
+    'posts_count': int,     # Number of posts
+    'id': str              # Instagram user ID
+}
+```
+</Accordion>
+
+<Accordion title="TikTok Fields">
+```python
+{
+    'id': str,              # Numeric TikTok ID
+    'username': str,        # TikTok username (uniqueId)
+    'full_name': str,       # Display name (nickname)
+    'follower_count': int,  # Number of followers
+    'following_count': int, # Number following
+    'posts_count': int,     # Number of videos
+    'signature': str,       # Bio/signature
+    'region': str,          # Country/region code
+    'sec_uid': str,         # Secure user ID
+    'url': str             # Profile URL
+}
+```
+</Accordion>
+
+<Accordion title="Threads Fields">
+```python
+{
+    'username': str,        # Threads username
+    'full_name': str,       # Display name
+    'follower_count': int,  # Number of followers
+    'following_count': int, # Number following
+    'posts_count': int,     # Number of posts
+    'id': str              # Threads user ID
+}
+```
+</Accordion>
+
+<Accordion title="X (Twitter) Fields">
+```python
+{
+    'id': str,              # Twitter ID (id_str)
+    'username': str,        # Screen name
+    'full_name': str,       # Display name
+    'follower_count': int,  # Always 0 (compatibility)
+    'following_count': int, # Always 0 (compatibility)
+    'posts_count': int      # Always 0 (compatibility)
+}
+```
+</Accordion>
+
+#### Usage Examples
+
+<Accordion title="Instagram Scraping">
+```python
+from utils.scraper import scrape_followers
+
+# Scrape Instagram followers
+accounts = ['nike', 'adidas', 'puma']
+followers = scrape_followers(
+    accounts=accounts,
+    max_count=100,
+    max_retries=3,
+    platform='instagram'
+)
+
+print(f"Scraped {len(followers)} unique followers")
+```
+</Accordion>
+
+<Accordion title="TikTok Scraping">
+```python
+from utils.scraper import scrape_followers
+
+# TikTok handles usernames with @ prefix
+accounts = ['@charlidamelio', '@khaby.lame', 'bellapoarch']
+followers = scrape_followers(
+    accounts=accounts,
+    max_count=200,
+    platform='tiktok'
+)
+
+# Access TikTok-specific fields
+for username, data in followers.items():
+    print(f"{username}: {data['signature']} (Region: {data['region']})")
+```
+</Accordion>
+
+<Accordion title="Threads Scraping">
+```python
+from utils.scraper import scrape_followers
+
+# Scrape Threads followers
+accounts = ['zuck', 'mosseri']
+followers = scrape_followers(
+    accounts=accounts,
+    max_count=50,
+    platform='threads'
+)
+```
+</Accordion>
+
+<Accordion title="X/Twitter Scraping">
+```python
+from utils.scraper import scrape_followers
+
+# Scrape X/Twitter followers
+accounts = ['elonmusk', 'BillGates', 'BarackObama']
+followers = scrape_followers(
+    accounts=accounts,
+    max_count=150,
+    platform='x'
+)
+
+# X returns id_str and screen_name
+for username, data in followers.items():
+    print(f"{data['username']} (ID: {data['id']}): {data['full_name']}")
+```
+</Accordion>
+
+#### Error Handling
+
+The function implements comprehensive error handling:
+
+```python
+from utils.scraper import scrape_followers
+import logging
+
+logger = logging.getLogger(__name__)
+
+try:
+    followers = scrape_followers(
+        accounts=['example_account'],
+        max_count=100,
+        max_retries=3,
+        platform='instagram'
+    )
+except ValueError as e:
+    # Missing environment variables
+    logger.error(f"Configuration error: {e}")
+except Exception as e:
+    # Scraping failed after all retries
+    logger.error(f"Scraping failed: {e}")
+```
+
+<Note>
+**Retry Logic**: The function automatically retries on:
+- Rate limit errors (HTTP 429)
+- Connection errors
+- Timeout errors
+- Network failures
+
+Exponential backoff prevents overwhelming the API.
+</Note>
+
+---
+
+## Advanced Features
+
+### Exponential Backoff Retry
+
+Automatic retry with increasing delays:
+
+```python
+# Retry delay calculation
+backoff_delay = 2 ** attempt
+
+# Attempt 1: 2^0 = 1s delay
+# Attempt 2: 2^1 = 2s delay
+# Attempt 3: 2^2 = 4s delay
+# Attempt 4: 2^3 = 8s delay
+```
+
+### Memory Optimization
+
+Built for large-scale scraping:
+
+```python
+# Process row-by-row to minimize memory footprint
+for _, row in followers_df.iterrows():
+    # Extract only required fields
+    follower_data = {
+        'username': row.get('username', ''),
+        'full_name': row.get('full_name', ''),
+        # ... minimal fields only
+    }
+    followers_dict[username] = follower_data
+
+# Clear DataFrame from memory immediately
+del followers_df
+del data
+```
+
+### Platform Detection
+
+Automatic input format adjustment based on platform:
+
+```python
+if platform.lower() == 'tiktok':
+    # Clean usernames: remove @ and URL prefixes
+    clean_usernames = []
+    for username in accounts:
+        clean_username = username.strip()
+        if clean_username.startswith('@'):
+            clean_username = clean_username[1:]
+        if 'tiktok.com/' in clean_username:
+            clean_username = clean_username.split('tiktok.com/')[-1].lstrip('@')
+        clean_usernames.append(clean_username)
+    
+    run_input = {
+        "usernames": clean_usernames,
+        "numFollowers": max_count
+    }
+```
+
+---
+
+## Environment Setup
+
+### Required Variables
+
+```bash .env
+# Core Apify Configuration
+APIFY_API_KEY=your_apify_api_key_here
+
+# Platform-Specific Actor IDs
+INSTAGRAM_APIFY_ACTOR_ID=your_instagram_actor_id
+TIKTOK_APIFY_ACTOR_ID=your_tiktok_actor_id
+THREADS_APIFY_ACTOR_ID=your_threads_actor_id
+X_APIFY_ACTOR_ID=your_x_actor_id
+
+# Legacy fallback for Instagram
+APIFY_ACTOR_ID=your_default_actor_id
+```
+
+<Warning>
+**Security**: Never commit `.env` files to version control. Add `.env` to `.gitignore`.
+</Warning>
+
+---
+
+## Performance Considerations
+
+### Free Tier Limits
+
+<Info>
+**Apify Free Tier**:
+- 500 compute units/month
+- 5GB storage
+- Rate limits apply
+
+Use `max_retries` and exponential backoff to stay within limits.
+</Info>
+
+### Batch Processing
+
+For large-scale scraping (500K+ profiles):
+
+```python
+from utils.scraper import scrape_followers
+import time
+
+# Process in chunks of 10 accounts
+all_accounts = ['account1', 'account2', ...] # 1000+ accounts
+chunk_size = 10
+all_followers = {}
+
+for i in range(0, len(all_accounts), chunk_size):
+    chunk = all_accounts[i:i + chunk_size]
+    
+    # Scrape chunk
+    followers = scrape_followers(
+        accounts=chunk,
+        max_count=100,
+        platform='instagram'
+    )
+    
+    all_followers.update(followers)
+    
+    # Delay between chunks to avoid rate limits
+    time.sleep(5)
+    
+    print(f"Processed {i + len(chunk)}/{len(all_accounts)} accounts")
+```
+
+---
+
+## Logging
+
+The scraper utilities provide detailed logging:
+
+```python
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
+# Scraper will log:
+# - Platform and actor selection
+# - Retry attempts with delays
+# - Rate limit warnings
+# - Total profiles scraped
+# - Unique followers processed
+```
+
+**Example Output**:
+```
+2026-03-14 10:30:15 - utils.scraper - INFO - Starting instagram scrape for 3 accounts, max 100 followers each
+2026-03-14 10:30:16 - utils.scraper - INFO - Using Apify actor apify/instagram-scraper for platform 'instagram'
+2026-03-14 10:30:45 - utils.scraper - INFO - Scraped 287 total follower profiles
+2026-03-14 10:30:45 - utils.scraper - INFO - Processed 287 unique followers from instagram
+```
+
+---
+
+## Best Practices
+
+<Accordion title="Use Platform-Specific Actor IDs">
+Always configure platform-specific actor IDs for optimal performance:
+```bash
+INSTAGRAM_APIFY_ACTOR_ID=apify/instagram-profile-scraper
+TIKTOK_APIFY_ACTOR_ID=apify/tiktok-scraper
+THREADS_APIFY_ACTOR_ID=apify/threads-scraper
+X_APIFY_ACTOR_ID=apify/twitter-scraper
+```
+</Accordion>
+
+<Accordion title="Handle Platform-Specific Fields">
+Different platforms return different data structures:
+```python
+followers = scrape_followers(accounts=['example'], platform='tiktok')
+
+for username, data in followers.items():
+    if 'signature' in data:  # TikTok-specific
+        print(f"Bio: {data['signature']}")
+    if 'region' in data:  # TikTok-specific
+        print(f"Region: {data['region']}")
+```
+</Accordion>
+
+<Accordion title="Monitor API Usage">
+Track Apify compute units to avoid exceeding free tier:
+```python
+from apify_client import ApifyClient
+import os
+
+client = ApifyClient(os.getenv('APIFY_API_KEY'))
+
+# Check usage after scraping
+user_info = client.user().get()
+print(f"Compute units used: {user_info.get('usedMonthlyComputeUnits', 0)}")
+```
+</Accordion>
+
+<Accordion title="Implement Graceful Degradation">
+Handle partial failures gracefully:
+```python
+try:
+    followers = scrape_followers(accounts=large_account_list, max_count=500)
+except Exception as e:
+    # Log error but continue with partial data
+    logger.error(f"Scraping failed: {e}")
+    followers = {}  # Use empty dict or cached data
+```
+</Accordion>
+
+---
+
+## Related Documentation
+
+- [Gender Detection](/advanced/gender-detection) - Detect gender from scraped profiles
+- [Batch Processor](/advanced/batch-processor) - Bulk database operations for scraped data
+- [API Reference](/api/scrape-followers) - REST API scraping endpoint

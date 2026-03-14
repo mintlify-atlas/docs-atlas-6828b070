@@ -1,0 +1,720 @@
+---
+title: 'Worker Management'
+description: 'Deploy, scale, and monitor Celery workers for production environments'
+---
+
+# Worker Management
+
+Celery workers are the workhorses that execute background tasks. This guide covers worker deployment, scaling strategies, monitoring, and troubleshooting.
+
+## Worker Configuration
+
+### Basic Worker Setup
+
+The project includes worker configuration in the `Procfile` for platform deployment:
+
+```bash Procfile
+web: gunicorn wsgi:app --workers 2 --timeout 120 --log-file - --max-requests 1000 --max-requests-jitter 50
+worker: celery -A celery_config worker --loglevel=info --concurrency=2 --max-tasks-per-child=50
+beat: celery -A celery_config beat --loglevel=info
+```
+
+<Info>
+**Process Types**: The Procfile defines three process types - `web` (Flask API), `worker` (Celery worker), and `beat` (Celery scheduler).
+</Info>
+
+### Worker Parameters
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `-A celery_config` | Module name | Celery app location |
+| `--loglevel=info` | Log level | INFO, DEBUG, WARNING, ERROR |
+| `--concurrency=2` | Worker threads | Number of concurrent tasks |
+| `--max-tasks-per-child=50` | Task limit | Restart worker after N tasks |
+
+## Starting Workers
+
+### Development Mode
+
+Start a worker locally for testing:
+
+```bash
+# Basic worker
+celery -A celery_config worker --loglevel=debug
+
+# With auto-reload (development)
+celery -A celery_config worker --loglevel=debug --autoreload
+```
+
+<Warning>
+**Auto-reload**: Only use `--autoreload` in development. It watches for code changes and restarts workers automatically.
+</Warning>
+
+### Production Mode
+
+Start workers for production:
+
+```bash
+# Single worker with optimized settings
+celery -A celery_config worker \
+  --loglevel=info \
+  --concurrency=4 \
+  --max-tasks-per-child=50 \
+  --time-limit=7200 \
+  --soft-time-limit=6900
+
+# Multiple workers (different queues)
+celery -A celery_config worker -Q scraping --concurrency=4 -n scraper@%h
+celery -A celery_config worker -Q processing --concurrency=2 -n processor@%h
+```
+
+### Using Supervisor (Linux)
+
+Manage workers with Supervisor for automatic restarts:
+
+```ini /etc/supervisor/conf.d/celery.conf
+[program:celery-worker]
+command=/path/to/venv/bin/celery -A celery_config worker --loglevel=info --concurrency=4
+directory=/path/to/project
+user=www-data
+autostart=true
+autorestart=true
+stdout_logfile=/var/log/celery/worker.log
+stderr_logfile=/var/log/celery/worker_error.log
+stopwaitsecs=600
+```
+
+Control workers:
+
+```bash
+sudo supervisorctl start celery-worker
+sudo supervisorctl stop celery-worker
+sudo supervisorctl restart celery-worker
+sudo supervisorctl status celery-worker
+```
+
+## Worker Scaling
+
+### Concurrency Settings
+
+Concurrency determines how many tasks a worker can execute simultaneously:
+
+<Steps>
+  <Step title="Free Tier: 2-4 workers">
+    Conservative settings for resource-constrained environments:
+    
+    ```bash
+    celery -A celery_config worker --concurrency=2
+    ```
+    
+    - **CPU**: 0.5-1 CPU cores
+    - **Memory**: 512 MB - 1 GB
+    - **Concurrent tasks**: 2
+  </Step>
+  
+  <Step title="Small Instance: 4-8 workers">
+    For dedicated small instances:
+    
+    ```bash
+    celery -A celery_config worker --concurrency=4
+    ```
+    
+    - **CPU**: 1-2 CPU cores
+    - **Memory**: 1-2 GB
+    - **Concurrent tasks**: 4
+  </Step>
+  
+  <Step title="Medium Instance: 8-16 workers">
+    Production settings for medium workloads:
+    
+    ```bash
+    celery -A celery_config worker --concurrency=8
+    ```
+    
+    - **CPU**: 2-4 CPU cores
+    - **Memory**: 2-4 GB
+    - **Concurrent tasks**: 8
+  </Step>
+  
+  <Step title="Large Instance: 16+ workers">
+    High-throughput production settings:
+    
+    ```bash
+    celery -A celery_config worker --concurrency=16
+    ```
+    
+    - **CPU**: 4+ CPU cores
+    - **Memory**: 4+ GB
+    - **Concurrent tasks**: 16
+  </Step>
+</Steps>
+
+### Autoscaling Workers
+
+Dynamically adjust worker count based on load:
+
+```bash
+# Autoscale between 2 and 10 workers
+celery -A celery_config worker --autoscale=10,2
+
+# With custom settings
+celery -A celery_config worker \
+  --autoscale=10,2 \
+  --max-tasks-per-child=50 \
+  --time-limit=7200
+```
+
+<Info>
+**Format**: `--autoscale=MAX,MIN` where MAX is maximum workers and MIN is minimum workers.
+</Info>
+
+### Pool Types
+
+Celery supports different worker pool implementations:
+
+<CodeGroup>
+```bash Prefork (Default)
+# Process-based pool (best for CPU-intensive)
+celery -A celery_config worker --pool=prefork --concurrency=4
+```
+
+```bash Gevent
+# Greenlet-based pool (best for I/O-intensive)
+celery -A celery_config worker --pool=gevent --concurrency=100
+```
+
+```bash Eventlet
+# Alternative greenlet implementation
+celery -A celery_config worker --pool=eventlet --concurrency=100
+```
+
+```bash Solo
+# Single-threaded (debugging only)
+celery -A celery_config worker --pool=solo
+```
+</CodeGroup>
+
+<Warning>
+**Gevent/Eventlet**: Requires installation: `pip install gevent` or `pip install eventlet`. Best for I/O-bound tasks (API calls, database queries).
+</Warning>
+
+## Queue Management
+
+### Queue-Specific Workers
+
+Deploy dedicated workers for specific queues:
+
+```bash
+# Worker for scraping queue only
+celery -A celery_config worker \
+  -Q scraping \
+  --concurrency=4 \
+  -n scraper@%h
+
+# Worker for processing queue only
+celery -A celery_config worker \
+  -Q processing \
+  --concurrency=2 \
+  -n processor@%h
+
+# Worker for default queue
+celery -A celery_config worker \
+  -Q default \
+  --concurrency=2 \
+  -n default@%h
+```
+
+### Multi-Queue Workers
+
+Single worker handling multiple queues with priorities:
+
+```bash
+# Process scraping queue with higher priority
+celery -A celery_config worker \
+  -Q scraping,processing,default \
+  --concurrency=4
+```
+
+<Info>
+Queues are consumed in order of declaration. Tasks from `scraping` are processed before `processing` and `default`.
+</Info>
+
+## Worker Monitoring
+
+### Celery Events
+
+Enable real-time event monitoring:
+
+```bash
+# Start event camera
+celery -A celery_config events
+
+# Monitor events in terminal
+celery -A celery_config events --dump
+```
+
+### Inspect Active Tasks
+
+Query worker state:
+
+```bash
+# List active tasks
+celery -A celery_config inspect active
+
+# List scheduled tasks
+celery -A celery_config inspect scheduled
+
+# List reserved tasks
+celery -A celery_config inspect reserved
+
+# Worker statistics
+celery -A celery_config inspect stats
+
+# Registered tasks
+celery -A celery_config inspect registered
+```
+
+### Flower - Web Monitoring UI
+
+Flower provides a beautiful web interface for Celery monitoring:
+
+```bash
+# Install Flower
+pip install flower
+
+# Start Flower
+celery -A celery_config flower --port=5555
+
+# With authentication
+celery -A celery_config flower \
+  --port=5555 \
+  --basic_auth=admin:password
+```
+
+Access Flower at `http://localhost:5555`
+
+<Info>
+**Flower Features**: Real-time monitoring, task history, worker management, task retry/revoke, and comprehensive statistics.
+</Info>
+
+## Worker Control
+
+### Graceful Shutdown
+
+Stop workers gracefully (completes running tasks):
+
+```bash
+# Send TERM signal
+celery -A celery_config control shutdown
+
+# Or use system signal
+kill -TERM <worker_pid>
+```
+
+<Steps>
+  <Step title="TERM Signal Sent">
+    Worker stops accepting new tasks
+  </Step>
+  
+  <Step title="Complete Running Tasks">
+    Worker waits for active tasks to complete (up to `stopwaitsecs`)
+  </Step>
+  
+  <Step title="Worker Exits">
+    Process terminates cleanly
+  </Step>
+</Steps>
+
+### Force Shutdown
+
+Kill workers immediately (tasks are requeued):
+
+```bash
+# Send KILL signal
+kill -KILL <worker_pid>
+```
+
+<Warning>
+**Data Loss Risk**: Force shutdown may leave tasks in inconsistent state. Only use when graceful shutdown fails.
+</Warning>
+
+### Pool Restart
+
+Restart worker pool without downtime:
+
+```bash
+# Restart pool (reloads code)
+celery -A celery_config control pool_restart
+```
+
+### Revoke Tasks
+
+Cancel running or queued tasks:
+
+```bash
+# Revoke specific task
+celery -A celery_config control revoke <task_id>
+
+# Revoke and terminate running task
+celery -A celery_config control revoke <task_id> --terminate
+```
+
+## Deployment Strategies
+
+### Render.com Deployment
+
+For Render, define workers in `render.yaml`:
+
+```yaml render.yaml
+services:
+  - type: web
+    name: scraper-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn wsgi:app --workers 2 --timeout 120
+    
+  - type: worker
+    name: scraper-worker
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: celery -A celery_config worker --loglevel=info --concurrency=2 --max-tasks-per-child=50
+    
+  - type: worker
+    name: scraper-beat
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: celery -A celery_config beat --loglevel=info
+```
+
+### Heroku Deployment
+
+Scale workers on Heroku:
+
+```bash
+# Scale workers
+heroku ps:scale worker=2
+
+# Scale beat scheduler
+heroku ps:scale beat=1
+
+# Check dyno status
+heroku ps
+
+# View worker logs
+heroku logs --ps worker --tail
+```
+
+### Docker Deployment
+
+Run workers in Docker containers:
+
+```dockerfile Dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+CMD ["celery", "-A", "celery_config", "worker", "--loglevel=info", "--concurrency=4"]
+```
+
+```yaml docker-compose.yml
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+  
+  web:
+    build: .
+    command: gunicorn wsgi:app --workers 2 --bind 0.0.0.0:8000
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+  
+  worker:
+    build: .
+    command: celery -A celery_config worker --loglevel=info --concurrency=4
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+  
+  beat:
+    build: .
+    command: celery -A celery_config beat --loglevel=info
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+```
+
+Start the stack:
+
+```bash
+# Build and start
+docker-compose up -d
+
+# Scale workers
+docker-compose up -d --scale worker=4
+
+# View logs
+docker-compose logs -f worker
+```
+
+## Performance Tuning
+
+### Memory Management
+
+Prevent memory leaks with automatic worker restarts:
+
+```bash
+# Restart worker after 50 tasks
+celery -A celery_config worker --max-tasks-per-child=50
+
+# Restart after 100 tasks
+celery -A celery_config worker --max-tasks-per-child=100
+```
+
+<Info>
+**Memory Leaks**: Python applications can accumulate memory over time. Restarting workers periodically frees memory.
+</Info>
+
+### Prefetch Multiplier
+
+Control how many tasks workers prefetch:
+
+```bash
+# Default: 4 tasks per worker
+celery -A celery_config worker --prefetch-multiplier=4
+
+# Disable prefetch (1 task at a time)
+celery -A celery_config worker --prefetch-multiplier=1
+```
+
+<CodeGroup>
+```python High Throughput (Default)
+# Prefetch 4 tasks per worker
+# Best for: Short-running tasks (< 1 minute)
+prefetch_multiplier=4
+```
+
+```python Long-Running Tasks
+# Prefetch only 1 task per worker
+# Best for: Long-running tasks (> 5 minutes)
+prefetch_multiplier=1
+```
+
+```python Mixed Workload
+# Prefetch 2 tasks per worker
+# Balanced approach
+prefetch_multiplier=2
+```
+</CodeGroup>
+
+### Task Acknowledgement
+
+Configure when tasks are acknowledged:
+
+```python celery_config.py
+# Late acknowledgement (default in our config)
+task_acks_late=True  # Acknowledge after task completes
+
+# Early acknowledgement
+task_acks_late=False  # Acknowledge when task starts
+```
+
+<Warning>
+**task_acks_late=True**: Tasks are requeued if worker crashes. Ensures at-least-once delivery but may cause duplicate processing.
+</Warning>
+
+## Troubleshooting
+
+### Workers Not Starting
+
+Check common issues:
+
+<Steps>
+  <Step title="Verify Redis Connection">
+    ```bash
+    # Test Redis connectivity
+    redis-cli -u $REDIS_URL ping
+    ```
+    
+    Expected output: `PONG`
+  </Step>
+  
+  <Step title="Check Celery App">
+    ```bash
+    # Verify Celery app loads
+    python -c "from celery_config import celery; print(celery)"
+    ```
+  </Step>
+  
+  <Step title="Check Logs">
+    ```bash
+    # Start worker with debug logging
+    celery -A celery_config worker --loglevel=debug
+    ```
+  </Step>
+  
+  <Step title="Verify Environment Variables">
+    ```bash
+    # Check required variables
+    echo $REDIS_URL
+    echo $SUPABASE_URL
+    echo $APIFY_API_KEY
+    ```
+  </Step>
+</Steps>
+
+### Tasks Not Executing
+
+Debug task execution issues:
+
+```bash
+# Check if tasks are queued
+celery -A celery_config inspect reserved
+
+# Check worker registrations
+celery -A celery_config inspect registered
+
+# Purge all tasks (CAUTION)
+celery -A celery_config purge
+```
+
+### High Memory Usage
+
+Reduce worker memory consumption:
+
+```bash
+# Reduce concurrency
+celery -A celery_config worker --concurrency=2
+
+# Restart workers more frequently
+celery -A celery_config worker --max-tasks-per-child=25
+
+# Use gevent for I/O-bound tasks
+celery -A celery_config worker --pool=gevent --concurrency=50
+```
+
+### Worker Stuck/Hung
+
+Restart stuck workers:
+
+```bash
+# Find worker PID
+ps aux | grep celery
+
+# Send TERM signal (graceful)
+kill -TERM <pid>
+
+# If stuck, force kill
+kill -KILL <pid>
+
+# Or restart all workers
+celery -A celery_config control shutdown
+```
+
+## Monitoring and Alerts
+
+### Health Checks
+
+Implement worker health monitoring:
+
+```python health_check.py
+from celery_config import celery
+from celery.app.control import Inspect
+
+def check_workers():
+    """Check if workers are running."""
+    inspect = Inspect(app=celery)
+    stats = inspect.stats()
+    
+    if not stats:
+        return False, "No workers running"
+    
+    return True, f"{len(stats)} workers running"
+
+def check_queues():
+    """Check queue lengths."""
+    with celery.connection_or_acquire() as conn:
+        return conn.default_channel.queue_declare(
+            queue='scraping', 
+            passive=True
+        ).message_count
+```
+
+### Logging Configuration
+
+Configure structured logging:
+
+```python
+import logging
+from celery.signals import after_setup_logger
+
+@after_setup_logger.connect
+def setup_loggers(logger, *args, **kwargs):
+    formatter = logging.Formatter(
+        '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+    )
+    
+    # File handler
+    fh = logging.FileHandler('/var/log/celery/worker.log')
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Use Multiple Workers for Production">
+    Deploy at least 2 workers for high availability
+  </Step>
+  
+  <Step title="Set Task Time Limits">
+    Always configure `task_time_limit` to prevent runaway tasks
+  </Step>
+  
+  <Step title="Enable Worker Restarts">
+    Use `--max-tasks-per-child` to prevent memory leaks
+  </Step>
+  
+  <Step title="Monitor Worker Health">
+    Implement health checks and alerting
+  </Step>
+  
+  <Step title="Use Supervisor/Systemd">
+    Configure process managers for automatic worker restarts
+  </Step>
+  
+  <Step title="Separate Queues by Priority">
+    Use dedicated workers for critical vs. background tasks
+  </Step>
+  
+  <Step title="Enable Result Compression">
+    Save Redis memory with gzip compression
+  </Step>
+  
+  <Step title="Configure Graceful Shutdown">
+    Allow workers to complete tasks before terminating
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Celery Configuration" icon="gear" href="/advanced/celery-configuration">
+    Review Celery settings and broker configuration
+  </Card>
+  <Card title="Task Queues" icon="list-check" href="/advanced/task-queues">
+    Learn about task implementations and queue routing
+  </Card>
+</CardGroup>

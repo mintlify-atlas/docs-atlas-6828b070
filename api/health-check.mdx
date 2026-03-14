@@ -1,0 +1,133 @@
+---
+title: 'Health Check'
+description: 'Monitor the API service status and version'
+---
+
+## Overview
+
+The health check endpoints provide basic service status information for monitoring and uptime verification. These endpoints do not require authentication or base_id headers.
+
+## Endpoints
+
+### GET /
+
+Basic health check endpoint for uptime monitoring.
+
+**Response**
+
+<ResponseField name="status" type="string" required>
+  Service status ("ok")
+</ResponseField>
+
+<ResponseField name="service" type="string" required>
+  Service name
+</ResponseField>
+
+<ResponseField name="version" type="string" required>
+  Current API version
+</ResponseField>
+
+**Example Request**
+
+```bash
+curl https://api.example.com/
+```
+
+**Example Response**
+
+```json
+{
+  "status": "ok",
+  "service": "Instagram Scraper API",
+  "version": "1.0.0"
+}
+```
+
+### GET /health
+
+Detailed health check endpoint with additional service information.
+
+**Response**
+
+<ResponseField name="status" type="string" required>
+  Health status ("healthy")
+</ResponseField>
+
+<ResponseField name="service" type="string" required>
+  Service name and environment
+</ResponseField>
+
+<ResponseField name="version" type="string" required>
+  Current API version from environment variable or default
+</ResponseField>
+
+<ResponseField name="async_enabled" type="boolean" required>
+  Whether async processing is enabled
+</ResponseField>
+
+**Example Request**
+
+```bash
+curl https://api.example.com/health
+```
+
+**Example Response**
+
+```json
+{
+  "status": "healthy",
+  "service": "Instagram Scraper API (Production)",
+  "version": "1.0.0",
+  "async_enabled": true
+}
+```
+
+### GET /healthz
+
+Simple health check endpoint for Electron process management. Returns plain text "ok" for lightweight health checks.
+
+**Response**
+
+Plain text: `ok`
+
+**Example Request**
+
+```bash
+curl https://api.example.com/healthz
+```
+
+**Example Response**
+
+```text
+ok
+```
+
+## Use Cases
+
+### Uptime Monitoring
+
+Use the `/` or `/health` endpoint with monitoring services like:
+- UptimeRobot
+- Pingdom
+- StatusCake
+- AWS CloudWatch
+
+### Load Balancer Health Checks
+
+The `/healthz` endpoint is optimized for load balancer health checks due to its minimal response size.
+
+### Deployment Verification
+
+Check the version number after deployment to confirm the correct version is running:
+
+```bash
+curl https://api.example.com/health | jq '.version'
+```
+
+### Service Discovery
+
+Verify async processing capabilities before making API calls:
+
+```bash
+curl https://api.example.com/health | jq '.async_enabled'
+```

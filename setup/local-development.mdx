@@ -1,0 +1,513 @@
+---
+title: "Local Development Setup"
+description: "Complete guide to setting up the Click Creators Scraper Server for local development with Flask, Celery, and Redis"
+---
+
+## Prerequisites
+
+Before starting, ensure you have the following installed:
+
+- **Python 3.9+** (recommended: Python 3.11)
+- **Redis** (for Celery task queue)
+- **Git** (for version control)
+- **Virtual environment** (venv or virtualenv)
+
+<Note>
+The scraper server is built with Flask for the API layer and Celery for asynchronous task processing. Redis is required as the message broker for Celery.
+</Note>
+
+## Quick Start
+
+The project includes a quick start script that automates most of the setup:
+
+<Steps>
+  <Step title="Clone and navigate to the project">
+    ```bash
+    cd server
+    ```
+  </Step>
+
+  <Step title="Run the quick start script">
+    ```bash
+    chmod +x quickstart.sh
+    ./quickstart.sh
+    ```
+    
+    This script will:
+    - Check Python version
+    - Install and start Redis
+    - Create a virtual environment
+    - Install dependencies
+    - Generate a `.env` template
+    - Create test scripts
+  </Step>
+
+  <Step title="Configure environment variables">
+    Update the generated `.env` file with your actual credentials (see [Environment Variables](/setup/environment-variables) for details).
+  </Step>
+
+  <Step title="Apply database migrations">
+    See [Database Setup](/setup/database-setup) for instructions on creating the required tables and indexes.
+  </Step>
+</Steps>
+
+## Manual Setup
+
+If you prefer to set up manually or the quick start script doesn't work on your system:
+
+### 1. Install Redis
+
+<CodeGroup>
+```bash macOS
+# Using Homebrew
+brew install redis
+brew services start redis
+
+# Verify Redis is running
+redis-cli ping
+# Expected output: PONG
+```
+
+```bash Ubuntu/Debian
+# Install Redis
+sudo apt-get update
+sudo apt-get install redis-server
+
+# Start Redis
+sudo systemctl start redis
+sudo systemctl enable redis
+
+# Verify Redis is running
+redis-cli ping
+# Expected output: PONG
+```
+
+```bash Windows
+# Using WSL2 (recommended)
+wsl --install
+wsl
+sudo apt-get update
+sudo apt-get install redis-server
+sudo service redis-server start
+
+# Or download Redis for Windows from:
+# https://redis.io/download
+```
+</CodeGroup>
+
+### 2. Create Virtual Environment
+
+```bash
+# Navigate to server directory
+cd server
+
+# Create virtual environment
+python3 -m venv venv
+
+# Activate virtual environment
+# On macOS/Linux:
+source venv/bin/activate
+
+# On Windows:
+venv\Scripts\activate
+```
+
+### 3. Install Dependencies
+
+```bash
+# Install all required packages
+pip install -r requirements.txt
+```
+
+<Info>
+The `requirements.txt` includes all production dependencies:
+- Flask 3.0.0 (web framework)
+- Celery 5.3.4 (task queue)
+- Supabase 2.9.0 (database client)
+- Apify Client 1.7.0 (scraping)
+- Gunicorn 21.2.0 (production server)
+- And more...
+</Info>
+
+### 4. Configure Environment Variables
+
+Create a `.env` file in the `server/` directory:
+
+```bash
+touch .env
+```
+
+See the [Environment Variables](/setup/environment-variables) page for the complete configuration.
+
+### 5. Setup Database
+
+Follow the [Database Setup](/setup/database-setup) guide to create the required Supabase tables and indexes.
+
+## Running the Development Server
+
+You need to run **three services** simultaneously:
+
+### Option A: Using tmux (Recommended)
+
+The quick start script generates a `start_all.sh` script that uses tmux:
+
+```bash
+./start_all.sh
+```
+
+This will start all services in a tmux session with split panes:
+- **Pane 0**: Flask API server
+- **Pane 1**: Celery worker
+- **Pane 2**: Test terminal
+
+<Note>
+To exit tmux: Press `Ctrl+B` then `D` to detach. To reattach: `tmux attach -t instagram_api`
+</Note>
+
+### Option B: Manual in Separate Terminals
+
+<Steps>
+  <Step title="Terminal 1: Start Flask API">
+    ```bash
+    source venv/bin/activate
+    python app.py
+    ```
+    
+    The API will start on `http://localhost:5001`
+    
+    **Expected output:**
+    ```
+    [INFO] Flask app initialized with CORS and rate limiting
+    [INFO] ✓ Supabase client initialized with connection pool (size: 5, tier: free)
+    [INFO] ✓ RLS context setup enabled for multi-tenant isolation
+     * Running on http://127.0.0.1:5001
+    ```
+  </Step>
+
+  <Step title="Terminal 2: Start Celery Worker">
+    ```bash
+    source venv/bin/activate
+    celery -A celery_config worker --loglevel=info --concurrency=2
+    ```
+    
+    **Expected output:**
+    ```
+    -------------- celery@hostname v5.3.4
+    ---- **** -----
+    --- * ***  * -- [config]
+    -- * - **** ---
+    - ** ---------- .> broker:      redis://localhost:6379/0
+    - ** ---------- .> result:      redis://localhost:6379/0
+    - *** --- * --- .> concurrency: 2 (prefork)
+    -- ******* ----
+    
+    [tasks]
+      . tasks.aggregate_scrape_results
+      . tasks.daily_pipeline_orchestrator
+      . tasks.ingest_profiles_batch
+      . tasks.scrape_account_batch
+    
+    [INFO] Connected to redis://localhost:6379/0
+    [INFO] celery@hostname ready.
+    ```
+  </Step>
+
+  <Step title="Terminal 3: Test the API">
+    ```bash
+    source venv/bin/activate
+    ./test_api.sh
+    ```
+    
+    Or test manually:
+    ```bash
+    # Health check
+    curl http://localhost:5001/health
+    
+    # Start a scraping job
+    curl -X POST http://localhost:5001/api/scrape-followers \
+      -H "Content-Type: application/json" \
+      -d '{
+        "accounts": ["nike", "adidas"],
+        "targetGender": "male",
+        "totalScrapeCount": 10
+      }'
+    ```
+  </Step>
+</Steps>
+
+## Project Structure
+
+Understanding the codebase structure:
+
+```
+server/
+├── app.py                      # Main Flask application
+│   ├── Flask routes & API endpoints
+│   ├── CORS & rate limiting config
+│   ├── Supabase client initialization
+│   └── RLS (Row Level Security) setup
+│
+├── celery_config.py            # Celery configuration
+│   ├── Redis broker setup
+│   ├── Task queue configuration
+│   └── Worker settings
+│
+├── tasks.py                    # Background Celery tasks
+│   ├── scrape_account_batch
+│   ├── aggregate_scrape_results
+│   ├── ingest_profiles_batch
+│   └── daily_pipeline_orchestrator
+│
+├── wsgi.py                     # Production WSGI entry point
+├── requirements.txt            # Python dependencies
+├── Procfile                    # Heroku/Render deployment config
+├── runtime.txt                 # Python version specification
+│
+├── utils/
+│   ├── scraper.py              # Apify scraping logic (multi-platform)
+│   ├── gender.py               # Gender detection algorithm
+│   ├── batch_processor.py      # Bulk database operations
+│   ├── airtable_creator.py     # Airtable base management
+│   ├── base_id_utils.py        # Multi-tenant utilities
+│   └── rls_context.py          # Row-level security context
+│
+├── .env                        # Environment variables (create this)
+└── .gitignore                  # Git ignore rules
+```
+
+## Development Workflow
+
+### Making Code Changes
+
+<Steps>
+  <Step title="Edit code">
+    Make your changes to any `.py` files.
+  </Step>
+
+  <Step title="Restart services">
+    - **Flask**: Press `Ctrl+C` and run `python app.py` again
+    - **Celery**: Press `Ctrl+C` and run the celery command again
+    
+    <Warning>
+    Celery does **not** auto-reload on code changes. You must restart the worker after modifying task code.
+    </Warning>
+  </Step>
+
+  <Step title="Test changes">
+    Use the test scripts or make API calls to verify your changes.
+  </Step>
+</Steps>
+
+### Hot Reloading
+
+For Flask auto-reload during development:
+
+```python
+# In app.py (last lines)
+if __name__ == '__main__':
+    debug = os.getenv('FLASK_ENV') != 'production'
+    port = int(os.getenv('PORT', 5001))
+    app.run(host='0.0.0.0', port=port, debug=debug)  # debug=True enables hot reload
+```
+
+## Testing
+
+### Health Check
+
+Verify all services are running:
+
+```bash
+curl http://localhost:5001/health
+```
+
+**Expected response:**
+```json
+{
+  "status": "ok",
+  "service": "Instagram Scraper API",
+  "version": "1.0.0"
+}
+```
+
+### Small Test Job
+
+Test with a small scraping job (10 profiles, ~30 seconds):
+
+```bash
+curl -X POST http://localhost:5001/api/scrape-followers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "accounts": ["nike", "adidas"],
+    "targetGender": "male",
+    "totalScrapeCount": 10,
+    "platform": "instagram"
+  }'
+```
+
+**Response:**
+```json
+{
+  "job_id": "abc-123-def-456",
+  "status_url": "/api/job-status/abc-123-def-456",
+  "total_batches": 1
+}
+```
+
+### Check Job Status
+
+```bash
+curl http://localhost:5001/api/job-status/abc-123-def-456
+```
+
+**Response:**
+```json
+{
+  "status": "processing",
+  "progress": 45.5,
+  "profiles_scraped": 5,
+  "created_at": "2025-10-02T10:00:00Z"
+}
+```
+
+### Get Results
+
+```bash
+curl "http://localhost:5001/api/job-results/abc-123-def-456?page=1&limit=10"
+```
+
+**Response:**
+```json
+{
+  "profiles": [
+    {
+      "id": "123456",
+      "username": "john_doe",
+      "full_name": "John Doe"
+    }
+  ],
+  "total": 10,
+  "page": 1,
+  "pages": 1
+}
+```
+
+## Troubleshooting
+
+### Redis Connection Failed
+
+**Error:**
+```
+celery.exceptions.OperationalError: Error connecting to Redis
+```
+
+**Solution:**
+```bash
+# Check if Redis is running
+redis-cli ping
+
+# If not, start Redis
+# macOS:
+brew services start redis
+
+# Linux:
+sudo systemctl start redis
+```
+
+### Port Already in Use
+
+**Error:**
+```
+OSError: [Errno 48] Address already in use
+```
+
+**Solution:**
+```bash
+# Find process using port 5001
+lsof -i :5001
+
+# Kill the process
+kill -9 <PID>
+
+# Or use a different port
+export PORT=5002
+python app.py
+```
+
+### Celery Tasks Not Running
+
+**Symptoms:** Jobs stay in "queued" status
+
+**Solution:**
+1. Check Celery worker is running:
+   ```bash
+   celery -A celery_config inspect active
+   ```
+
+2. Check Redis queue:
+   ```bash
+   redis-cli
+   > LLEN celery
+   ```
+
+3. Restart Celery worker:
+   ```bash
+   # Ctrl+C to stop, then restart
+   celery -A celery_config worker --loglevel=info --concurrency=2
+   ```
+
+### Import Errors
+
+**Error:**
+```
+ModuleNotFoundError: No module named 'flask'
+```
+
+**Solution:**
+```bash
+# Ensure virtual environment is activated
+source venv/bin/activate
+
+# Reinstall dependencies
+pip install -r requirements.txt
+```
+
+### Database Connection Issues
+
+**Error:**
+```
+ValueError: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables are required.
+```
+
+**Solution:**
+1. Check `.env` file exists and has correct values
+2. Restart Flask app to load new environment variables
+3. Verify Supabase credentials are correct
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Environment Variables" icon="gear" href="/setup/environment-variables">
+    Configure all required environment variables
+  </Card>
+  <Card title="Database Setup" icon="database" href="/setup/database-setup">
+    Create database tables and indexes
+  </Card>
+</CardGroup>
+
+## Performance Tips
+
+<Tip>
+**Local Development Optimizations:**
+- Use `--concurrency=2` for Celery (matches development workload)
+- Enable Flask debug mode for hot reloading
+- Use Redis locally (don't use cloud Redis for dev)
+- Keep `SUPABASE_POOL_SIZE=5` for local testing
+</Tip>
+
+<Warning>
+**Do Not:**
+- Run multiple Celery workers on the same machine (causes race conditions)
+- Use production credentials in `.env` for local development
+- Commit `.env` to version control
+- Test with large scraping jobs (>1000 profiles) locally
+</Warning>

@@ -1,0 +1,615 @@
+---
+title: 'Task Queues'
+description: 'Complete guide to Celery task implementations, queue routing, and background job processing'
+---
+
+# Task Queues
+
+The Click Creators Scraper Server implements several Celery tasks for asynchronous processing of scraping operations, profile ingestion, and daily pipeline orchestration.
+
+## Task Architecture
+
+All tasks are defined in `tasks.py` and use a base task class with automatic retry logic:
+
+```python tasks.py
+from celery import Task
+from celery.exceptions import SoftTimeLimitExceeded
+from celery_config import celery
+
+class BaseTask(Task):
+    """Base task with error handling and retry logic."""
+    
+    autoretry_for = (Exception,)
+    retry_kwargs = {'max_retries': 3}
+    retry_backoff = True
+    retry_backoff_max = 600  # 10 minutes
+    retry_jitter = True
+```
+
+<Info>
+**Automatic Retries**: All tasks inherit retry logic with exponential backoff (up to 10 minutes) and jitter to prevent thundering herd.
+</Info>
+
+## Core Tasks
+
+### 1. Scrape Account Batch
+
+Scrapes followers from a batch of social media accounts with gender filtering.
+
+```python tasks.py
+@celery.task(base=BaseTask, bind=True, name='tasks.scrape_account_batch')
+def scrape_account_batch(
+    self,
+    job_id: str,
+    accounts: List[str],
+    target_gender: str = 'male',
+    max_per_account: int = 5,
+    batch_number: int = 1,
+    base_id: str = None,
+    platform: str = 'instagram'
+) -> Dict[str, Any]:
+    """
+    Scrape a batch of accounts (max 50) and return filtered profiles.
+    
+    OPTIMIZED FOR 500K+ SCALE WITH MULTI-TENANT & MULTI-PLATFORM SUPPORT:
+    - RLS context set for tenant isolation
+    - Platform-aware scraping (Instagram, TikTok, Threads, X)
+    - Retry logic for Apify failures
+    - Memory-efficient processing
+    """
+```
+
+<Steps>
+  <Step title="Set RLS Context">
+    Configure Row Level Security for multi-tenant isolation:
+    
+    ```python
+    if base_id:
+        from utils.rls_context import set_rls_context
+        set_rls_context(base_id)
+        logger.info(f"RLS context set for base_id={base_id}")
+    ```
+  </Step>
+  
+  <Step title="Scrape Followers">
+    Call platform-specific scraper:
+    
+    ```python
+    followers = scrape_followers(accounts, max_per_account, platform=platform)
+    logger.info(f"Scraped {len(followers)} followers from {platform}")
+    ```
+  </Step>
+  
+  <Step title="Detect Gender">
+    Apply gender detection algorithm:
+    
+    ```python
+    followers_gender = detect_gender(followers)
+    ```
+  </Step>
+  
+  <Step title="Filter by Gender">
+    Filter based on target gender:
+    
+    ```python
+    filtered_followers = filter_by_gender(followers_gender, target_gender)
+    logger.info(f"Filtered to {len(filtered_followers)} profiles")
+    ```
+  </Step>
+  
+  <Step title="Update Job Progress">
+    Increment progress counter in database:
+    
+    ```python
+    supabase.table('scrape_jobs')\
+        .update({
+            'profiles_scraped': new_count,
+            'updated_at': datetime.now(timezone.utc).isoformat()
+        })\
+        .eq('job_id', job_id)\
+        .execute()
+    ```
+  </Step>
+</Steps>
+
+#### Return Value
+
+```python
+{
+    'job_id': 'uuid-here',
+    'batch_number': 1,
+    'profiles': [
+        {
+            'id': '123456',
+            'username': 'john_doe',
+            'full_name': 'John Doe'
+        }
+    ],
+    'total_scraped': 100,
+    'total_filtered': 65
+}
+```
+
+### 2. Aggregate Scrape Results
+
+Combines results from multiple batch tasks and stores in database.
+
+```python tasks.py
+@celery.task(base=BaseTask, bind=True, name='tasks.aggregate_scrape_results')
+def aggregate_scrape_results(
+    self, 
+    batch_results: List[Dict], 
+    job_id: str, 
+    base_id: str = None
+) -> Dict[str, Any]:
+    """
+    Aggregate results from all batch tasks and store in database.
+    """
+```
+
+<CodeGroup>
+```python Combine Results
+# Combine all profiles from batches
+all_profiles = []
+for result in batch_results:
+    if result and 'profiles' in result:
+        all_profiles.extend(result['profiles'])
+        total_scraped += result.get('total_scraped', 0)
+        total_filtered += result.get('total_filtered', 0)
+```
+
+```python Batch Insert
+# Insert in chunks of 1000
+batch_size = 1000
+for i in range(0, len(all_profiles), batch_size):
+    batch = all_profiles[i:i + batch_size]
+    
+    records = [{
+        'job_id': job_id,
+        'profile_id': profile['id'],
+        'username': profile['username'],
+        'full_name': profile.get('full_name', ''),
+        'created_at': datetime.now(timezone.utc).isoformat()
+    } for profile in batch]
+    
+    supabase.table('scrape_results').insert(records).execute()
+```
+
+```python Update Job Status
+# Mark job as completed
+supabase.table('scrape_jobs')\
+    .update({
+        'status': 'completed',
+        'total_scraped': total_scraped,
+        'total_filtered': total_filtered,
+        'profiles_scraped': len(all_profiles),
+        'progress': 100.0,
+        'completed_at': datetime.now(timezone.utc).isoformat()
+    })\
+    .eq('job_id', job_id)\
+    .execute()
+```
+</CodeGroup>
+
+### 3. Ingest Profiles Batch
+
+Ingests scraped profiles into Supabase with deduplication.
+
+```python tasks.py
+@celery.task(base=BaseTask, bind=True, name='tasks.ingest_profiles_batch')
+def ingest_profiles_batch(
+    self,
+    batch_id: str,
+    profiles: List[Dict],
+    batch_number: int = 1,
+    base_id: str = None
+) -> Dict[str, Any]:
+    """
+    Ingest a batch of profiles into Supabase (max 1000).
+    """
+```
+
+<Info>
+**Batch Size**: Limited to 1000 profiles per task to stay within Supabase payload limits (~200 KB per batch).
+</Info>
+
+The task uses the optimized batch processor:
+
+```python tasks.py
+from utils.batch_processor import batch_insert_profiles
+
+# Bulk insert with deduplication
+inserted_raw, added_to_global, skipped = batch_insert_profiles(
+    supabase,
+    profiles,
+    base_id=base_id,
+    batch_size=500
+)
+
+logger.info(f"Complete - raw={inserted_raw}, global={added_to_global}, skipped={skipped}")
+```
+
+### 4. Daily Pipeline Orchestrator
+
+Orchestrates the complete daily workflow: selection, distribution, and sync.
+
+```python tasks.py
+@celery.task(base=BaseTask, bind=True, name='tasks.daily_pipeline_orchestrator')
+def daily_pipeline_orchestrator(
+    self,
+    campaign_date: str = None,
+    profiles_per_table: int = 180,
+    base_id: str = None
+) -> Dict[str, Any]:
+    """
+    Orchestrate the entire daily pipeline: selection, distribution, sync, cleanup.
+    """
+```
+
+<Steps>
+  <Step title="Daily Selection">
+    Select unused profiles from global pool:
+    
+    ```python
+    available_profiles = supabase.table('global_usernames')\
+        .select('id, username, full_name')\
+        .eq('used', False)\
+        .eq('base_id', base_id)\
+        .limit(target_count)\
+        .execute()
+    ```
+  </Step>
+  
+  <Step title="Mark as Used">
+    Update profiles to prevent reuse:
+    
+    ```python
+    supabase.table('global_usernames')\
+        .update({
+            'used': True,
+            'used_at': datetime.now(timezone.utc).isoformat()
+        })\
+        .eq('id', profile_id)\
+        .execute()
+    ```
+  </Step>
+  
+  <Step title="Create Assignments">
+    Insert into daily_assignments table:
+    
+    ```python
+    assignments = [{
+        'assignment_id': str(uuid.uuid4()),
+        'campaign_id': campaign_id,
+        'va_table_number': 0,  # Placeholder
+        'position': 0,
+        'id': profile['id'],
+        'username': profile['username'],
+        'base_id': base_id,
+        'status': 'pending'
+    }]
+    
+    supabase.table('daily_assignments').insert(assignments).execute()
+    ```
+  </Step>
+  
+  <Step title="Distribution">
+    Assign profiles to VA tables:
+    
+    ```python
+    random.shuffle(assignments)
+    
+    for assignment in assignments:
+        supabase.table('daily_assignments')\
+            .update({
+                'va_table_number': current_table,
+                'position': current_position
+            })\
+            .eq('assignment_id', assignment['assignment_id'])\
+            .execute()
+    ```
+  </Step>
+</Steps>
+
+## Supabase Client (Thread-Safe)
+
+Tasks use a thread-safe Supabase client with connection pooling:
+
+```python tasks.py
+import threading
+from supabase import create_client, Client
+
+_supabase_client = None
+_supabase_lock = threading.Lock()
+
+def get_supabase_client() -> Client:
+    """
+    Initialize and return Supabase client.
+    
+    OPTIMIZED FOR 500K+ SCALE:
+    - Thread-safe singleton pattern
+    - Connection pooling with configurable limits
+    - Prevents connection exhaustion
+    """
+    global _supabase_client
+    
+    if _supabase_client is not None:
+        return _supabase_client
+    
+    with _supabase_lock:
+        if _supabase_client is not None:
+            return _supabase_client
+        
+        pool_size = int(os.getenv('SUPABASE_POOL_SIZE', '5'))
+        
+        _supabase_client = create_client(
+            supabase_url, 
+            supabase_key,
+            options={'db': {'schema': 'public'}}
+        )
+        
+        logger.info(f"Supabase client initialized (pool: {pool_size})")
+        return _supabase_client
+```
+
+<Warning>
+**Connection Pool Size**: Default is 5 connections per worker. Free tier Supabase allows max 50 total connections. Scale accordingly.
+</Warning>
+
+## Task Invocation
+
+### Synchronous Execution
+
+```python
+from tasks import scrape_account_batch
+
+# Execute immediately (blocks until complete)
+result = scrape_account_batch(
+    job_id='job-123',
+    accounts=['user1', 'user2'],
+    target_gender='male',
+    base_id='app123ABC'
+)
+```
+
+### Asynchronous Execution
+
+```python
+from tasks import scrape_account_batch
+
+# Queue for background execution
+task = scrape_account_batch.delay(
+    job_id='job-123',
+    accounts=['user1', 'user2'],
+    target_gender='male',
+    base_id='app123ABC'
+)
+
+# Get task ID
+print(f"Task ID: {task.id}")
+
+# Check status later
+if task.ready():
+    result = task.get()
+```
+
+### Using apply_async
+
+```python
+# Advanced options
+task = scrape_account_batch.apply_async(
+    args=[
+        'job-123',
+        ['user1', 'user2']
+    ],
+    kwargs={
+        'target_gender': 'female',
+        'base_id': 'app123ABC'
+    },
+    queue='scraping',
+    countdown=60,  # Delay 60 seconds
+    expires=3600   # Expire after 1 hour
+)
+```
+
+## Error Handling
+
+### Soft Time Limit
+
+Tasks can handle soft time limits gracefully:
+
+```python
+from celery.exceptions import SoftTimeLimitExceeded
+
+@celery.task
+def long_running_task():
+    try:
+        # Long operation
+        process_data()
+    except SoftTimeLimitExceeded:
+        # Cleanup before hard kill
+        logger.warning("Task exceeded soft limit, cleaning up...")
+        cleanup_partial_work()
+        raise
+```
+
+### Automatic Retries
+
+Tasks automatically retry with exponential backoff:
+
+```python
+class BaseTask(Task):
+    autoretry_for = (Exception,)     # Retry on any exception
+    retry_kwargs = {'max_retries': 3}
+    retry_backoff = True             # Exponential backoff
+    retry_backoff_max = 600          # Max 10 minutes
+    retry_jitter = True              # Random jitter to prevent thundering herd
+```
+
+<Info>
+**Retry Schedule**: 1st retry ~2s, 2nd retry ~8s, 3rd retry ~32s (with jitter)
+</Info>
+
+### Manual Retry
+
+Retry with custom logic:
+
+```python
+@celery.task(bind=True)
+def custom_retry_task(self):
+    try:
+        risky_operation()
+    except RateLimitError as exc:
+        # Retry after 60 seconds
+        raise self.retry(exc=exc, countdown=60, max_retries=5)
+```
+
+## Task Monitoring
+
+### Check Task Status
+
+```python
+from celery.result import AsyncResult
+
+task_id = 'abc-123-def-456'
+result = AsyncResult(task_id)
+
+print(f"Status: {result.state}")
+print(f"Ready: {result.ready()}")
+print(f"Successful: {result.successful()}")
+
+if result.ready():
+    print(f"Result: {result.get()}")
+```
+
+### Task States
+
+| State | Description |
+|-------|-------------|
+| `PENDING` | Task is waiting to be executed |
+| `STARTED` | Task has been started |
+| `RETRY` | Task is being retried |
+| `SUCCESS` | Task completed successfully |
+| `FAILURE` | Task failed (after all retries) |
+
+## Queue Routing
+
+Route tasks to specific queues:
+
+```python
+# In celery_config.py
+task_routes = {
+    'tasks.scrape_account_batch': {'queue': 'scraping'},
+    'tasks.aggregate_scrape_results': {'queue': 'processing'},
+    'tasks.ingest_profiles_batch': {'queue': 'processing'},
+}
+```
+
+Start workers for specific queues:
+
+```bash
+# Worker for scraping queue only
+celery -A celery_config worker -Q scraping --concurrency=4
+
+# Worker for processing queue only
+celery -A celery_config worker -Q processing --concurrency=2
+```
+
+## Performance Optimization
+
+### Batch Size Tuning
+
+```python
+# Optimal batch sizes for different operations
+SCRAPE_BATCH_SIZE = 50        # Accounts per scrape task
+INGEST_BATCH_SIZE = 1000      # Profiles per ingest task
+DB_BATCH_SIZE = 500           # Records per database operation
+```
+
+### Task Chunking
+
+Split large operations into smaller tasks:
+
+```python
+from celery import group
+
+# Process 10,000 profiles in batches of 1000
+profiles = get_profiles()  # 10,000 profiles
+batch_size = 1000
+
+tasks = group(
+    ingest_profiles_batch.s(
+        batch_id=f'batch-{i}',
+        profiles=profiles[i:i+batch_size],
+        base_id='app123ABC'
+    )
+    for i in range(0, len(profiles), batch_size)
+)
+
+result = tasks.apply_async()
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Use Idempotent Tasks">
+    Design tasks to be safely retried:
+    
+    ```python
+    @celery.task
+    def idempotent_task(user_id):
+        # Check if already processed
+        if is_already_processed(user_id):
+            return {'status': 'already_done'}
+        
+        # Process
+        result = process_user(user_id)
+        mark_as_processed(user_id)
+        return result
+    ```
+  </Step>
+  
+  <Step title="Set Appropriate Time Limits">
+    Configure task-specific limits:
+    
+    ```python
+    @celery.task(time_limit=300, soft_time_limit=270)
+    def quick_task():
+        # Must complete in 5 minutes
+        pass
+    ```
+  </Step>
+  
+  <Step title="Use ignore_result for Fire-and-Forget">
+    Save Redis memory:
+    
+    ```python
+    @celery.task(ignore_result=True)
+    def log_event(data):
+        # No need to store result
+        logger.info(data)
+    ```
+  </Step>
+  
+  <Step title="Enable Task Compression">
+    For large payloads:
+    
+    ```python
+    @celery.task(compression='gzip')
+    def process_large_data(data):
+        # Compress task arguments
+        pass
+    ```
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Celery Configuration" icon="gear" href="/advanced/celery-configuration">
+    Configure Celery settings and Redis connection
+  </Card>
+  <Card title="Worker Management" icon="server" href="/advanced/worker-management">
+    Deploy and scale Celery workers
+  </Card>
+</CardGroup>

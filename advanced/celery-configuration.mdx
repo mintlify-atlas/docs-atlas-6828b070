@@ -1,0 +1,295 @@
+---
+title: 'Celery Configuration'
+description: 'Complete guide to Celery task queue configuration for asynchronous background processing'
+---
+
+# Celery Configuration
+
+The Click Creators Scraper Server uses **Celery** as its distributed task queue for handling asynchronous background jobs. This architecture enables scalable processing of scraping tasks, profile ingestion, and daily pipeline operations.
+
+## Overview
+
+Celery is configured in `celery_config.py` with Redis as the message broker and result backend. The system is optimized for both free-tier deployments and production scale.
+
+## Core Configuration
+
+### Redis Connection
+
+The system automatically configures Redis connections with SSL support for production environments:
+
+```python celery_config.py
+import os
+from celery import Celery
+from kombu import Exchange, Queue
+
+# Initialize Celery
+celery = Celery('instagram_scraper')
+
+# Redis configuration from environment
+redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+
+# SSL/TLS settings for secure Redis connections
+if redis_url.startswith('redis://') and 'localhost' not in redis_url:
+    redis_url = redis_url.replace('redis://', 'rediss://')
+    broker_use_ssl = {
+        'ssl_cert_reqs': ssl.CERT_NONE  # Don't verify SSL certificates
+    }
+    redis_backend_use_ssl = broker_use_ssl
+```
+
+<Info>
+The system automatically upgrades `redis://` to `rediss://` (SSL) for non-localhost connections, ensuring secure communication in production.
+</Info>
+
+### Celery Settings
+
+The complete Celery configuration optimized for production:
+
+```python celery_config.py
+celery.conf.update(
+    # Broker and Backend
+    broker_url=redis_url,
+    result_backend=redis_url,
+    broker_use_ssl=broker_use_ssl,
+    redis_backend_use_ssl=redis_backend_use_ssl,
+    
+    # Serialization
+    task_serializer='json',
+    result_serializer='json',
+    accept_content=['json'],
+    timezone='UTC',
+    enable_utc=True,
+    
+    # Task Execution Limits
+    task_time_limit=7200,              # 2 hours hard limit
+    task_soft_time_limit=6900,         # 1h 55m soft limit
+    worker_max_tasks_per_child=50,     # Restart worker after 50 tasks
+    
+    # Retry Settings
+    task_acks_late=True,
+    task_reject_on_worker_lost=True,
+    
+    # Result Backend Settings (Optimized for Free Tier)
+    result_expires=7200,               # 2 hours (saves Redis memory)
+    result_persistent=True,
+    result_compression='gzip',         # Compress results to save space
+    
+    # Connection Settings
+    broker_connection_retry_on_startup=True,
+    broker_pool_limit=10,
+)
+```
+
+## Configuration Parameters
+
+### Task Time Limits
+
+<Steps>
+  <Step title="Hard Time Limit: 7200 seconds">
+    Tasks are forcefully terminated after 2 hours to prevent indefinite execution.
+    
+    ```python
+    task_time_limit=7200  # 2 hours
+    ```
+  </Step>
+  
+  <Step title="Soft Time Limit: 6900 seconds">
+    Tasks receive a `SoftTimeLimitExceeded` exception after 1 hour 55 minutes, allowing graceful cleanup.
+    
+    ```python
+    task_soft_time_limit=6900  # 1h 55m
+    ```
+  </Step>
+  
+  <Step title="Worker Task Limit: 50 tasks">
+    Workers restart after processing 50 tasks to prevent memory leaks.
+    
+    ```python
+    worker_max_tasks_per_child=50
+    ```
+  </Step>
+</Steps>
+
+### Retry Configuration
+
+```python
+# Acknowledge tasks after completion (not before)
+task_acks_late=True
+
+# Reject tasks if worker crashes
+task_reject_on_worker_lost=True
+```
+
+<Warning>
+`task_acks_late=True` ensures tasks are requeued if a worker crashes before completion. This provides at-least-once delivery semantics.
+</Warning>
+
+### Result Backend Optimization
+
+The configuration is optimized for Redis free tier constraints:
+
+```python
+result_expires=7200         # Results expire after 2 hours
+result_persistent=True      # Persist results to disk
+result_compression='gzip'   # Compress results to save memory
+```
+
+<Info>
+**Free Tier Optimization**: Results are compressed with gzip and expire after 2 hours to minimize Redis memory usage, keeping within typical free tier limits (25-50 MB).
+</Info>
+
+## Task Queues
+
+The system uses three separate queues for task isolation and prioritization:
+
+```python celery_config.py
+task_default_queue='default'
+task_queues=(
+    Queue('default', Exchange('default'), routing_key='default'),
+    Queue('scraping', Exchange('scraping'), routing_key='scraping'),
+    Queue('processing', Exchange('processing'), routing_key='processing'),
+)
+```
+
+### Queue Usage
+
+| Queue | Purpose | Example Tasks |
+|-------|---------|---------------|
+| `default` | General tasks | Health checks, status updates |
+| `scraping` | Scraping operations | `scrape_account_batch` |
+| `processing` | Data processing | `aggregate_scrape_results`, `ingest_profiles_batch` |
+
+<CodeGroup>
+```python Route to Scraping Queue
+from celery_config import celery
+
+@celery.task(queue='scraping')
+def scrape_task():
+    # Scraping logic
+    pass
+```
+
+```python Route to Processing Queue
+from celery_config import celery
+
+@celery.task(queue='processing')
+def process_task():
+    # Processing logic
+    pass
+```
+</CodeGroup>
+
+## Environment Variables
+
+Required environment variables for Celery configuration:
+
+| Variable | Description | Default | Example |
+|----------|-------------|---------|----------|
+| `REDIS_URL` | Redis connection URL | `redis://localhost:6379/0` | `redis://red-abc123.render.com:6379` |
+
+<Note>
+The system automatically converts `redis://` to `rediss://` for production URLs (non-localhost) to enable SSL/TLS encryption.
+</Note>
+
+## Connection Pooling
+
+Celery maintains a connection pool to Redis:
+
+```python
+broker_pool_limit=10  # Maximum 10 broker connections per worker
+```
+
+This prevents connection exhaustion while allowing concurrent task processing.
+
+## Monitoring Configuration
+
+To enable Celery monitoring tools:
+
+```bash
+# Enable Flower (Web UI)
+celery -A celery_config flower --port=5555
+
+# Enable events for monitoring
+celery -A celery_config events
+```
+
+## Production Best Practices
+
+<Steps>
+  <Step title="Use SSL for Redis">
+    Always use `rediss://` URLs in production for encrypted connections.
+  </Step>
+  
+  <Step title="Set Result Expiration">
+    Configure `result_expires` to prevent Redis memory bloat (default: 2 hours).
+  </Step>
+  
+  <Step title="Enable Compression">
+    Use `result_compression='gzip'` to reduce Redis memory usage by 60-80%.
+  </Step>
+  
+  <Step title="Configure Time Limits">
+    Set appropriate `task_time_limit` values to prevent runaway tasks.
+  </Step>
+  
+  <Step title="Monitor Worker Health">
+    Use `worker_max_tasks_per_child` to automatically restart workers and prevent memory leaks.
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+### Connection Issues
+
+If workers can't connect to Redis:
+
+```bash
+# Check Redis URL
+echo $REDIS_URL
+
+# Test Redis connection
+redis-cli -u $REDIS_URL ping
+```
+
+### SSL Certificate Errors
+
+If you see SSL certificate errors:
+
+```python
+# In celery_config.py, adjust SSL settings:
+broker_use_ssl = {
+    'ssl_cert_reqs': ssl.CERT_NONE  # Disable cert verification (managed Redis)
+}
+```
+
+<Warning>
+Only use `ssl_cert_reqs: CERT_NONE` with trusted managed Redis providers (Render, Heroku, etc.). For self-hosted Redis, provide proper certificates.
+</Warning>
+
+### Memory Issues
+
+If Redis runs out of memory:
+
+```python
+# Reduce result expiration time
+result_expires=3600  # 1 hour instead of 2
+
+# Enable compression if not already enabled
+result_compression='gzip'
+
+# Disable result persistence for non-critical tasks
+@celery.task(ignore_result=True)
+def background_task():
+    pass
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Task Queues" icon="list-check" href="/advanced/task-queues">
+    Learn about task implementations and queue management
+  </Card>
+  <Card title="Worker Management" icon="server" href="/advanced/worker-management">
+    Configure and scale Celery workers for production
+  </Card>
+</CardGroup>

@@ -1,0 +1,326 @@
+---
+title: 'Run Daily Pipeline'
+description: 'Orchestrate the complete daily campaign workflow with a single API call'
+---
+
+## Overview
+
+The `/api/run-daily` endpoint orchestrates the entire daily pipeline in one API call. It executes all four workflow steps sequentially: daily selection, distribution, Airtable sync, and cleanup.
+
+<Warning>
+  This endpoint assumes `/api/ingest` has already been called to populate the global_usernames table with scraped profiles.
+</Warning>
+
+## POST /api/run-daily
+
+Execute the complete daily campaign pipeline.
+
+### Headers
+
+<ParamField header="X-Base-Id" type="string" required>
+  Airtable base ID for multi-tenant isolation (e.g., "appXYZ123ABC")
+</ParamField>
+
+<ParamField header="Content-Type" type="string" default="application/json">
+  Must be `application/json`
+</ParamField>
+
+### Body Parameters
+
+<ParamField body="profiles_per_table" type="integer" default={180}>
+  Number of profiles to assign per VA table. Should match your `NEXT_PUBLIC_PROFILES_PER_TABLE` configuration.
+</ParamField>
+
+### Pipeline Steps
+
+The endpoint executes these steps sequentially:
+
+1. **Daily Selection** - Creates a new campaign and selects unused profiles from global_usernames
+2. **Distribution** - Shuffles profiles randomly and assigns them to VA tables with positions
+3. **Airtable Sync** - Pushes assignments to Airtable tables (one table per VA)
+4. **Cleanup** - Handles 7-day lifecycle maintenance:
+   - Marks 7-day old assignments as "to_unfollow"
+   - Deletes records older than 7 days from Supabase tables
+
+### Response
+
+<ResponseField name="success" type="boolean" required>
+  Whether the entire pipeline completed successfully
+</ResponseField>
+
+<ResponseField name="campaign_id" type="string" required>
+  UUID of the created campaign
+</ResponseField>
+
+<ResponseField name="selected" type="integer" required>
+  Number of profiles selected from global_usernames
+</ResponseField>
+
+<ResponseField name="distributed" type="boolean" required>
+  Whether distribution step completed (always true if pipeline succeeds)
+</ResponseField>
+
+<ResponseField name="airtable_synced" type="boolean" required>
+  Whether Airtable sync completed successfully
+</ResponseField>
+
+<ResponseField name="cleanup_done" type="boolean" required>
+  Whether cleanup step completed successfully
+</ResponseField>
+
+<ResponseField name="execution_time" type="number" required>
+  Total pipeline execution time in seconds
+</ResponseField>
+
+### Error Response
+
+<ResponseField name="success" type="boolean" required>
+  Always false for errors
+</ResponseField>
+
+<ResponseField name="error" type="string" required>
+  Error message describing what went wrong
+</ResponseField>
+
+<ResponseField name="step_failed" type="string" required>
+  Which pipeline step failed: "daily_selection", "distribution", "distribution", or "unknown"
+</ResponseField>
+
+<ResponseField name="campaign_id" type="string">
+  Campaign ID if created before failure (only present for distribution or later failures)
+</ResponseField>
+
+## Examples
+
+### Successful Pipeline Execution
+
+```bash
+curl -X POST https://api.example.com/api/run-daily \
+  -H "Content-Type: application/json" \
+  -H "X-Base-Id: appXYZ123ABC" \
+  -d '{
+    "profiles_per_table": 180
+  }'
+```
+
+**Response (200 OK)**
+
+```json
+{
+  "success": true,
+  "campaign_id": "550e8400-e29b-41d4-a716-446655440000",
+  "selected": 14400,
+  "distributed": true,
+  "airtable_synced": true,
+  "cleanup_done": true,
+  "execution_time": 125.5
+}
+```
+
+### Using Default Configuration
+
+```bash
+curl -X POST https://api.example.com/api/run-daily \
+  -H "Content-Type: application/json" \
+  -H "X-Base-Id: appXYZ123ABC" \
+  -d '{}'
+```
+
+**Response (200 OK)**
+
+```json
+{
+  "success": true,
+  "campaign_id": "660e8400-e29b-41d4-a716-446655440001",
+  "selected": 14400,
+  "distributed": true,
+  "airtable_synced": true,
+  "cleanup_done": true,
+  "execution_time": 132.8
+}
+```
+
+### Insufficient Profiles Error
+
+```bash
+curl -X POST https://api.example.com/api/run-daily \
+  -H "Content-Type: application/json" \
+  -H "X-Base-Id: appXYZ123ABC" \
+  -d '{
+    "profiles_per_table": 180
+  }'
+```
+
+**Response (400 Bad Request)**
+
+```json
+{
+  "success": false,
+  "error": "No unused profiles available in global_usernames",
+  "step_failed": "daily_selection"
+}
+```
+
+### Invalid Base ID Error
+
+```bash
+curl -X POST https://api.example.com/api/run-daily \
+  -H "Content-Type: application/json" \
+  -H "X-Base-Id: invalid_base" \
+  -d '{}'
+```
+
+**Response (400 Bad Request)**
+
+```json
+{
+  "success": false,
+  "error": "Invalid base_id format: invalid_base"
+}
+```
+
+## Configuration
+
+### Number of VA Tables
+
+The number of VA tables is determined dynamically by:
+1. Checking the `scraping_jobs` table in Supabase for the base_id
+2. Counting tables in the Airtable base if not found in database
+3. Using the `NUM_VA_TABLES` environment variable as fallback (default: 80)
+
+### Profiles Per Table
+
+Recommended to pass `profiles_per_table` from your client's `NEXT_PUBLIC_PROFILES_PER_TABLE` environment variable:
+
+```bash
+curl -X POST https://api.example.com/api/run-daily \
+  -H "Content-Type: application/json" \
+  -H "X-Base-Id: appXYZ123ABC" \
+  -d "{
+    \"profiles_per_table\": ${NEXT_PUBLIC_PROFILES_PER_TABLE}
+  }"
+```
+
+### Total Profiles Selected
+
+Total profiles = `num_va_tables × profiles_per_table`
+
+Example: 80 VA tables × 180 profiles = 14,400 total profiles
+
+## Workflow Integration
+
+### Typical Daily Workflow
+
+1. **Morning**: Scrape fresh profiles
+   ```bash
+   curl -X POST /api/scrape-followers -d '{...}'
+   ```
+
+2. **Morning**: Ingest scraped profiles
+   ```bash
+   curl -X POST /api/ingest -d '{...}'
+   ```
+
+3. **Morning**: Run daily pipeline
+   ```bash
+   curl -X POST /api/run-daily
+   ```
+
+4. **Throughout day**: VAs work from Airtable tables
+
+5. **Evening**: Sync status updates from Airtable
+   ```bash
+   curl -X POST /api/sync-airtable-statuses
+   ```
+
+### Automated Scheduling
+
+Schedule with cron, GitHub Actions, or AWS EventBridge:
+
+```bash
+# Run at 6 AM daily
+0 6 * * * curl -X POST https://api.example.com/api/run-daily \
+  -H "X-Base-Id: $AIRTABLE_BASE_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"profiles_per_table": 180}'
+```
+
+## Performance
+
+### Execution Time
+
+Typical execution times:
+- **14,400 profiles**: 2-3 minutes
+- **7,200 profiles**: 1-2 minutes
+- **28,800 profiles**: 4-6 minutes
+
+Factors affecting performance:
+- Number of VA tables
+- Airtable API rate limits (5 requests/second)
+- Supabase connection pool size
+- Network latency
+
+### Rate Limiting
+
+The endpoint implements:
+- Airtable batch operations (10 records/request)
+- 200ms delays between Airtable requests
+- Supabase connection pooling
+
+## Error Handling
+
+### Partial Failures
+
+If Airtable sync fails but other steps succeed:
+```json
+{
+  "success": true,
+  "campaign_id": "...",
+  "selected": 14400,
+  "distributed": true,
+  "airtable_synced": false,  // Failed
+  "cleanup_done": true,
+  "execution_time": 45.2
+}
+```
+
+The campaign status in Supabase will be marked as `false` (failed).
+
+### Retry Strategy
+
+For failed pipelines:
+1. Check error logs to identify the failed step
+2. Fix the underlying issue (e.g., add more profiles, check Airtable credentials)
+3. Re-run the pipeline or individual step endpoints
+
+### Individual Step Endpoints
+
+If the orchestrated pipeline fails, you can run steps individually:
+- `/api/daily-selection` - Step 1
+- `/api/distribute/<campaign_id>` - Step 2
+- `/api/airtable-sync/<campaign_id>` - Step 3
+- `/api/sync-airtable-statuses` - Cleanup part 1
+- `/api/mark-unfollow-due` - Cleanup part 2
+- `/api/delete-completed-after-delay` - Cleanup part 3
+
+## Best Practices
+
+<Check>
+  **Always check execution_time** - Monitor for performance degradation over time
+</Check>
+
+<Check>
+  **Verify sufficient profiles** - Ensure global_usernames has enough unused profiles before running
+</Check>
+
+<Check>
+  **Monitor campaign status** - Check the campaigns table to verify successful completion
+</Check>
+
+<Check>
+  **Run cleanup regularly** - The cleanup step prevents database bloat from old records
+</Check>
+
+<Warning>
+  **Don't run multiple times per day** - Each execution marks profiles as used. Running twice will require 2× profiles.
+</Warning>

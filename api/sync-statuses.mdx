@@ -1,0 +1,182 @@
+---
+title: 'Sync Airtable Statuses'
+description: 'Sync manual VA status updates from Airtable back to Supabase'
+---
+
+## POST /api/sync-airtable-statuses
+
+Sync manual status updates made by VAs in Airtable back to Supabase. This endpoint fetches records from all VA tables in Airtable and updates matching records in Supabase where statuses differ.
+
+### Headers
+
+<ParamField header="X-Base-Id" type="string" required>
+  Airtable base ID for multi-tenant isolation (format: `appXXXXXXXXXX`)
+</ParamField>
+
+### Request Body
+
+<ParamField body="base_id" type="string">
+  Alternative way to pass base_id (if not using header)
+</ParamField>
+
+### Response
+
+<ResponseField name="success" type="boolean" required>
+  Whether the sync operation completed successfully
+</ResponseField>
+
+<ResponseField name="synced_count" type="number" required>
+  Number of records updated in Supabase
+</ResponseField>
+
+<ResponseField name="errors" type="array" required>
+  Array of error messages encountered during sync (empty if no errors)
+</ResponseField>
+
+### Example Request
+
+```bash
+curl -X POST https://api.example.com/api/sync-airtable-statuses \
+  -H "Content-Type: application/json" \
+  -H "X-Base-Id: appABC123XYZ456"
+```
+
+### Example Response
+
+```json
+{
+  "success": true,
+  "synced_count": 247,
+  "errors": []
+}
+```
+
+### Response with Errors
+
+```json
+{
+  "success": true,
+  "synced_count": 195,
+  "errors": [
+    "Failed to sync Daily_Outreach_Table_42: Connection timeout",
+    "Failed to sync Daily_Outreach_Table_67: Rate limit exceeded"
+  ]
+}
+```
+
+### Error Response
+
+```json
+{
+  "success": false,
+  "error": "Invalid base_id format: invalid_base"
+}
+```
+
+## Sync Process
+
+### How It Works
+
+1. **Fetch All Tables**: Iterates through all VA tables (`Daily_Outreach_Table_01` to `Daily_Outreach_Table_XX`)
+2. **Read Airtable Records**: Fetches all records from each table
+3. **Match by ID**: Matches records by Instagram profile `id` and `va_table_number`
+4. **Compare Status**: Compares Airtable `progress_status` with Supabase `status`
+5. **Update Differences**: Updates Supabase only where statuses differ
+6. **Batch Processing**: Processes records in batches of 10 with rate limiting
+
+### Status Field Mapping
+
+| Airtable Field | Supabase Field | Type |
+|----------------|----------------|------|
+| `progress_status` | `status` | Single Select (string) |
+
+### Valid Status Values
+
+- `pending` - Profile not yet contacted
+- `contacted` - Initial message sent
+- `followed` - User followed the profile
+- `unfollow` - Ready to unfollow (7+ days old)
+- `completed` - Follow/unfollow cycle complete
+
+### Rate Limiting
+
+- **Batch Size**: 10 records per batch
+- **Delay**: 0.2 seconds between batches (5 requests/second)
+- **Retry Logic**: Continues processing even if individual tables fail
+
+## Idempotency
+
+This endpoint is **idempotent** and safe to call multiple times:
+- Only updates records where status differs
+- No duplicate updates
+- Safe to run on a schedule (e.g., every 5 minutes)
+
+## Use Cases
+
+### Scheduled Sync
+
+Run periodically to keep Supabase in sync with VA manual updates:
+
+```bash
+# Cron job every 5 minutes
+*/5 * * * * curl -X POST https://api.example.com/api/sync-airtable-statuses \
+  -H "X-Base-Id: appABC123XYZ456"
+```
+
+### Manual Refresh
+
+Call after VAs complete a batch of work to immediately update analytics dashboards.
+
+### Workflow Integration
+
+Incorporate into automation workflows:
+1. VAs update statuses in Airtable
+2. Sync runs automatically
+3. Analytics dashboards reflect real-time progress
+4. Automated workflows trigger based on status changes
+
+<Note>
+  This endpoint processes all VA tables for the specified base_id. The number of tables is determined dynamically from the database configuration.
+</Note>
+
+<Warning>
+  Partial failures are logged in the `errors` array but don't cause the entire operation to fail. Check the `errors` array even when `success: true`.
+</Warning>
+
+## Related Endpoints
+
+### Status Lifecycle Management
+
+After syncing statuses, use these endpoints to manage the profile lifecycle:
+
+- **POST /api/mark-unfollow-due** - Mark 7-day-old 'followed' profiles as 'unfollow'
+- **POST /api/delete-completed-after-delay** - Delete 'completed' profiles after 24 hours
+
+### Typical Workflow
+
+```mermaid
+graph TD
+    A[VAs Update Airtable] --> B[/api/sync-airtable-statuses]
+    B --> C[Supabase Updated]
+    C --> D[/api/mark-unfollow-due]
+    D --> E[7-day profiles marked]
+    E --> F[/api/delete-completed-after-delay]
+    F --> G[Completed profiles cleaned up]
+```
+
+## Performance
+
+### Expected Sync Times
+
+| VA Tables | Records/Table | Avg Sync Time |
+|-----------|---------------|---------------|
+| 20 | 180 | ~15 seconds |
+| 50 | 180 | ~35 seconds |
+| 80 | 180 | ~55 seconds |
+
+### Optimization Tips
+
+1. Run during off-peak hours for large syncs
+2. Monitor the `errors` array for recurring issues
+3. Consider running less frequently if VA update patterns are predictable
+4. Use webhooks (if available) instead of polling for real-time updates

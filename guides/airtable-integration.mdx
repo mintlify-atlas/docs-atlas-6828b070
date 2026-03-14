@@ -1,0 +1,647 @@
+---
+title: 'Airtable Integration'
+description: 'Create and manage Airtable bases with automated table generation for VA (Virtual Assistant) outreach campaigns'
+---
+
+The Click Creators Scraper Server includes comprehensive Airtable integration for creating and managing daily outreach campaigns. This guide covers table creation, schema design, and multi-platform support.
+
+## Overview
+
+The Airtable integration automates the creation of VA (Virtual Assistant) tables for daily outreach campaigns:
+
+- **Automated Table Creation**: Generate 80+ VA tables in a single API call
+- **Standardized Schema**: Consistent field structure across all tables
+- **Multi-Platform Support**: Works with Instagram, TikTok, Threads, and X data
+- **Idempotent Operations**: Safe to re-run (skips existing tables)
+- **Error Handling**: Graceful failure with detailed error reporting
+
+<Info>
+  A typical deployment creates 80 VA tables, each holding 180 profiles, for a total of 14,400 daily outreach targets.
+</Info>
+
+## Table Creation
+
+### Programmatic API
+
+Use the `create_airtable_tables` function to create tables programmatically:
+
+```python
+from utils.airtable_creator import create_airtable_tables
+
+result = create_airtable_tables(
+    api_key='your_airtable_personal_access_token',
+    base_id='appXYZ123ABC',
+    num_tables=80
+)
+
+if result['success']:
+    print(f"Created {result['tables_created']} tables")
+    print(f"Skipped {result['tables_skipped']} existing tables")
+    print(f"Failed {result['tables_failed']} tables")
+else:
+    print(f"Error: {result['error']}")
+```
+
+### Response Schema
+
+```python
+{
+    'success': True,
+    'base_id': 'appXYZ123ABC',
+    'tables_created': 75,
+    'tables_skipped': 5,
+    'tables_failed': 0,
+    'failed_tables': [],
+    'table_ids': {
+        'Daily_Outreach_Table_01': 'tblABC123',
+        'Daily_Outreach_Table_02': 'tblDEF456',
+        # ... more table IDs
+    },
+    'total_tables': 80,
+    'message': 'Created 75 new tables, 5 already existed'
+}
+```
+
+### Legacy Class Interface
+
+For backward compatibility, the `AirtableCreator` class is still supported:
+
+```python
+from utils.airtable_creator import AirtableCreator
+
+creator = AirtableCreator(
+    airtable_token='your_personal_access_token'
+)
+
+result = creator.create_base_with_va_tables(
+    base_id='appXYZ123ABC',
+    num_vas=80,
+    base_name='Daily Outreach Campaign'
+)
+```
+
+## Table Schema
+
+Each VA table is created with a standardized schema supporting multi-platform data:
+
+### Field Definitions
+
+```python utils/airtable_creator.py
+# From airtable_creator.py:124-187
+table = base.create_table(
+    name=table_name,
+    fields=[
+        {
+            "name": "id",
+            "type": "singleLineText",
+            "description": "Unique identifier for the profile"
+        },
+        {
+            "name": "username",
+            "type": "singleLineText",
+            "description": "Social media username (platform-specific)"
+        },
+        {
+            "name": "full_name",
+            "type": "singleLineText",
+            "description": "Full name of the profile"
+        },
+        {
+            "name": "platform",
+            "type": "singleSelect",
+            "description": "Social media platform",
+            "options": {
+                "choices": [
+                    {"name": "instagram"},
+                    {"name": "tiktok"},
+                    {"name": "threads"},
+                    {"name": "x"}
+                ]
+            }
+        },
+        {
+            "name": "position",
+            "type": "number",
+            "description": "Position in the assignment queue",
+            "options": {
+                "precision": 0  # Integer
+            }
+        },
+        {
+            "name": "campaign_date",
+            "type": "date",
+            "description": "Date of the campaign",
+            "options": {
+                "dateFormat": {
+                    "name": "iso"  # YYYY-MM-DD format
+                }
+            }
+        },
+        {
+            "name": "progress_status",
+            "type": "singleSelect",
+            "description": "Current status of the outreach",
+            "options": {
+                "choices": [
+                    {"name": "pending"},
+                    {"name": "followed"},
+                    {"name": "unfollowed"},
+                    {"name": "completed"}
+                ]
+            }
+        }
+    ]
+)
+```
+
+### Field Reference
+
+| Field | Type | Description | Example |
+|-------|------|-------------|----------|
+| `id` | Single Line Text | Unique profile identifier from platform | `123456789` |
+| `username` | Single Line Text | Platform-specific username/handle | `john_doe` |
+| `full_name` | Single Line Text | Display name or real name | `John Doe` |
+| `platform` | Single Select | Social media platform | `instagram`, `tiktok`, `threads`, `x` |
+| `position` | Number (Integer) | Order in VA's outreach queue | `1`, `2`, `3`, ... `180` |
+| `campaign_date` | Date (ISO) | Campaign date in YYYY-MM-DD format | `2026-03-14` |
+| `progress_status` | Single Select | Current outreach status | `pending`, `followed`, `unfollowed`, `completed` |
+
+<Note>
+  The schema is designed to work seamlessly with data from all supported platforms (Instagram, TikTok, Threads, X).
+</Note>
+
+## Table Naming Convention
+
+Tables follow a zero-padded naming pattern:
+
+```python
+# From airtable_creator.py:116-117
+table_name = f"Daily_Outreach_Table_{i:02d}"
+```
+
+**Examples:**
+- `Daily_Outreach_Table_01`
+- `Daily_Outreach_Table_02`
+- ...
+- `Daily_Outreach_Table_80`
+
+<Info>
+  Zero-padding ensures correct alphabetical sorting in Airtable's interface.
+</Info>
+
+## Base ID Extraction
+
+The system supports multiple input formats for base IDs:
+
+### Direct Base ID
+
+```python
+base_id = 'appXYZ123ABC'
+```
+
+### Airtable URL
+
+```python
+from utils.airtable_creator import extract_base_id_from_url
+
+url = 'https://airtable.com/appXYZ123ABC/tblTable1/viwView1'
+base_id = extract_base_id_from_url(url)
+# Returns: 'appXYZ123ABC'
+```
+
+### Implementation
+
+```python utils/airtable_creator.py
+def extract_base_id_from_url(url: str) -> Optional[str]:
+    """
+    Extract Airtable base ID from an Airtable URL.
+    """
+    # If it's already just a base_id (starts with 'app'), return it
+    if url.startswith('app') and '/' not in url:
+        return url
+    
+    # Extract base_id from URL
+    pattern = r'https?://(?:www\.)?airtable\.com/(app[a-zA-Z0-9]+)'
+    match = re.search(pattern, url)
+    
+    if match:
+        return match.group(1)
+    
+    return None
+```
+
+## Base ID Validation
+
+Validate base IDs before making API calls:
+
+```python
+from utils.airtable_creator import validate_base_id
+
+# Valid base IDs
+validate_base_id('appXYZ123ABC')  # True
+validate_base_id('app1ovtHsWbF2Ae7x')  # True
+
+# Invalid base IDs
+validate_base_id('invalid')  # False
+validate_base_id('tblTable123')  # False (table ID, not base ID)
+validate_base_id('')  # False
+```
+
+### Implementation
+
+```python utils/airtable_creator.py
+def validate_base_id(base_id: str) -> bool:
+    """
+    Validate that a base_id follows Airtable's format.
+    """
+    if not base_id:
+        return False
+    
+    # Airtable base IDs start with 'app' followed by alphanumeric characters
+    pattern = r'^app[a-zA-Z0-9]{8,20}$'
+    return bool(re.match(pattern, base_id))
+```
+
+## Rate Limiting
+
+Airtable API has rate limits. The system includes automatic delays:
+
+```python utils/airtable_creator.py
+# From airtable_creator.py:193-194
+# Rate limiting: Airtable allows ~5 requests per second
+time.sleep(0.25)  # 250ms delay between table creations
+```
+
+**Calculation:**
+- 80 tables × 250ms delay = 20 seconds of rate limiting
+- Actual table creation time: ~30-40 seconds
+- Total time for 80 tables: ~50-60 seconds
+
+<Warning>
+  Removing rate limiting may result in HTTP 429 (Too Many Requests) errors from Airtable's API.
+</Warning>
+
+## Error Handling
+
+### Duplicate Table Handling
+
+The system gracefully handles existing tables:
+
+```python utils/airtable_creator.py
+# From airtable_creator.py:196-209
+try:
+    table = base.create_table(name=table_name, fields=[...])
+    created_tables.append(table)
+    table_ids[table_name] = table.id
+    logger.info(f"✓ Successfully created table: {table_name}")
+except Exception as e:
+    error_msg = str(e)
+    
+    # Check if error is due to duplicate table name
+    if 'DUPLICATE_TABLE_NAME' in error_msg or 'already exists' in error_msg.lower():
+        logger.info(f"⊙ Table {table_name} already exists, skipping...")
+        skipped_tables.append(table_name)
+    else:
+        logger.error(f"✗ Error creating table {table_name}: {error_msg}")
+        failed_tables.append({'table_name': table_name, 'error': error_msg})
+```
+
+<Info>
+  Re-running table creation is safe. Existing tables are skipped without errors.
+</Info>
+
+### Failed Table Reporting
+
+Failed tables are returned with detailed error information:
+
+```python
+{
+    'success': False,
+    'tables_created': 75,
+    'tables_failed': 5,
+    'failed_tables': [
+        {
+            'table_name': 'Daily_Outreach_Table_76',
+            'error': 'Request timeout after 30s'
+        },
+        {
+            'table_name': 'Daily_Outreach_Table_77',
+            'error': 'Rate limit exceeded'
+        }
+    ]
+}
+```
+
+## Environment Configuration
+
+Set up Airtable credentials:
+
+```bash .env
+# Airtable Configuration
+AIRTABLE_TOKEN=your_personal_access_token
+AIRTABLE_BASE_ID=appXYZ123ABC
+NUM_VA_TABLES=80
+```
+
+### Getting Your Airtable Token
+
+<Steps>
+  <Step title="Go to Airtable Account">
+    Navigate to https://airtable.com/account
+  </Step>
+  
+  <Step title="Generate Personal Access Token">
+    Click "Generate token" in the Personal Access Tokens section
+  </Step>
+  
+  <Step title="Set Scopes">
+    Grant the following scopes:
+    - `data.records:read`
+    - `data.records:write`
+    - `schema.bases:read`
+    - `schema.bases:write`
+  </Step>
+  
+  <Step title="Select Bases">
+    Choose which bases the token can access
+  </Step>
+  
+  <Step title="Copy Token">
+    Copy the generated token and add it to your `.env` file
+  </Step>
+</Steps>
+
+<Warning>
+  Never commit your Airtable token to version control. Always use environment variables.
+</Warning>
+
+## Daily Pipeline Integration
+
+The table creation is part of the larger daily pipeline orchestration:
+
+```python tasks.py
+@celery.task(base=BaseTask, bind=True, name='tasks.daily_pipeline_orchestrator')
+def daily_pipeline_orchestrator(
+    self,
+    campaign_date: str = None,
+    profiles_per_table: int = 180,
+    base_id: str = None
+) -> Dict[str, Any]:
+    """
+    Orchestrate the entire daily pipeline: selection, distribution, sync, cleanup.
+    """
+    try:
+        # Configuration
+        num_va_tables = int(os.getenv('NUM_VA_TABLES', 80))
+        target_count = num_va_tables * profiles_per_table  # 80 * 180 = 14,400
+        
+        # Step 1: Daily Selection (select 14,400 unused profiles)
+        # Step 2: Distribution (assign to 80 VA tables, 180 each)
+        # Step 3: Airtable Sync (sync to Airtable tables)
+        
+        # Note: Airtable table creation should be done separately
+        # via create_airtable_tables() before running daily pipeline
+        
+        return {
+            'success': True,
+            'campaign_id': campaign_id,
+            'selected': total_selected,
+            'distributed': distributed_count
+        }
+    except Exception as e:
+        logger.error(f"Pipeline error: {str(e)}")
+        raise
+```
+
+<Note>
+  Airtable table creation is a one-time setup. The daily pipeline assumes tables already exist.
+</Note>
+
+## Multi-Platform Data Sync
+
+When syncing scraped profiles to Airtable, the platform field is populated:
+
+<Tabs>
+  <Tab title="Instagram">
+    ```python
+    {
+        "id": "123456789",
+        "username": "john_doe",
+        "full_name": "John Doe",
+        "platform": "instagram",
+        "position": 1,
+        "campaign_date": "2026-03-14",
+        "progress_status": "pending"
+    }
+    ```
+  </Tab>
+
+  <Tab title="TikTok">
+    ```python
+    {
+        "id": "987654321",
+        "username": "charlidamelio",
+        "full_name": "Charli D'Amelio",
+        "platform": "tiktok",
+        "position": 2,
+        "campaign_date": "2026-03-14",
+        "progress_status": "pending"
+    }
+    ```
+  </Tab>
+
+  <Tab title="Threads">
+    ```python
+    {
+        "id": "555555555",
+        "username": "zuck",
+        "full_name": "Mark Zuckerberg",
+        "platform": "threads",
+        "position": 3,
+        "campaign_date": "2026-03-14",
+        "progress_status": "pending"
+    }
+    ```
+  </Tab>
+
+  <Tab title="X (Twitter)">
+    ```python
+    {
+        "id": "44196397",
+        "username": "elonmusk",
+        "full_name": "Elon Musk",
+        "platform": "x",
+        "position": 4,
+        "campaign_date": "2026-03-14",
+        "progress_status": "pending"
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Create tables before pipeline" icon="1">
+    Run `create_airtable_tables()` once during initial setup, before scheduling daily pipelines:
+    
+    ```python
+    # One-time setup
+    result = create_airtable_tables(
+        api_key=airtable_token,
+        base_id=base_id,
+        num_tables=80
+    )
+    
+    # Then schedule daily pipeline
+    # (assumes tables already exist)
+    ```
+  </Accordion>
+  
+  <Accordion title="Validate base IDs early" icon="2">
+    Always validate base IDs before making API calls:
+    
+    ```python
+    if not validate_base_id(base_id):
+        raise ValueError(f"Invalid base_id: {base_id}")
+    ```
+  </Accordion>
+  
+  <Accordion title="Handle idempotency" icon="3">
+    Design sync operations to be idempotent (safe to re-run):
+    
+    - Check if records exist before inserting
+    - Use upsert operations when possible
+    - Skip duplicate table creation gracefully
+  </Accordion>
+  
+  <Accordion title="Monitor rate limits" icon="4">
+    Keep the 250ms delay between table creations to avoid rate limiting:
+    
+    ```python
+    time.sleep(0.25)  # Don't reduce below 200ms
+    ```
+  </Accordion>
+  
+  <Accordion title="Use descriptive table names" icon="5">
+    The default naming convention is clear and sortable:
+    
+    - `Daily_Outreach_Table_01` (not `Table1` or `VA_01`)
+    - Zero-padded for correct sorting
+    - Descriptive of purpose
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+### Authentication Failed
+
+**Error:**
+```
+Failed to initialize Airtable API: Authentication failed
+```
+
+**Solution:**
+- Verify your Personal Access Token is correct
+- Check token hasn't expired
+- Ensure token has required scopes (data.records:write, schema.bases:write)
+
+### Base Not Found
+
+**Error:**
+```
+Failed to initialize Airtable API: Base appXYZ123ABC not found
+```
+
+**Solution:**
+- Verify base ID is correct
+- Ensure token has access to this specific base
+- Check base hasn't been deleted
+
+### Rate Limit Exceeded
+
+**Error:**
+```
+Error creating table: Rate limit exceeded (HTTP 429)
+```
+
+**Solution:**
+- Increase delay between table creations from 250ms to 500ms
+- Reduce batch size (create fewer tables at once)
+- Wait a few minutes before retrying
+
+### Duplicate Table Name
+
+**Behavior:**
+Table creation is skipped with info log:
+```
+⊙ Table Daily_Outreach_Table_01 already exists, skipping...
+```
+
+**Solution:**
+This is expected behavior. No action needed - the table already exists and will be used.
+
+## Complete Example
+
+Here's a complete example of setting up Airtable integration:
+
+```python
+import os
+from utils.airtable_creator import (
+    create_airtable_tables,
+    validate_base_id,
+    extract_base_id_from_url
+)
+
+# Configuration
+AIRTABLE_TOKEN = os.getenv('AIRTABLE_TOKEN')
+BASE_URL = 'https://airtable.com/appXYZ123ABC/tblMain/viwGrid'
+NUM_TABLES = 80
+
+# Extract and validate base ID
+base_id = extract_base_id_from_url(BASE_URL)
+if not validate_base_id(base_id):
+    raise ValueError(f"Invalid base_id extracted: {base_id}")
+
+print(f"Creating {NUM_TABLES} tables in base {base_id}...")
+
+# Create tables
+result = create_airtable_tables(
+    api_key=AIRTABLE_TOKEN,
+    base_id=base_id,
+    num_tables=NUM_TABLES
+)
+
+# Report results
+if result['success']:
+    print(f"✓ Success!")
+    print(f"  - Created: {result['tables_created']} tables")
+    print(f"  - Skipped: {result['tables_skipped']} existing tables")
+    print(f"  - Failed: {result['tables_failed']} tables")
+    
+    if result['failed_tables']:
+        print("\nFailed tables:")
+        for failure in result['failed_tables']:
+            print(f"  - {failure['table_name']}: {failure['error']}")
+    
+    print(f"\nTotal table IDs: {len(result['table_ids'])}")
+else:
+    print(f"✗ Failed: {result['error']}")
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Scraping Workflow" icon="diagram-project" href="/guides/scraping-workflow">
+    Scrape profiles to populate Airtable tables
+  </Card>
+  <Card title="Job Tracking" icon="chart-line" href="/guides/job-tracking">
+    Monitor scraping jobs before syncing
+  </Card>
+  <Card title="Batch Processing" icon="layer-group" href="/guides/batch-processing">
+    Optimize data operations at scale
+  </Card>
+  <Card title="Multi-Platform Support" icon="globe" href="/guides/multi-platform-support">
+    Configure scraping for different platforms
+  </Card>
+</CardGroup>

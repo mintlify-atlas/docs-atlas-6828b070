@@ -1,80 +1,417 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: 'Quickstart'
+description: 'Get started with the Click Creators Scraper Server in under 5 minutes'
 ---
 
-## Get started in three steps
+## Welcome to Click Creators Scraper Server
 
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+This asynchronous task processing system is capable of handling **1,000,000+ social media accounts per month** with a production-ready architecture built on Flask, Celery, and Redis.
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  This guide will help you go from zero to your first successful API call in under 5 minutes.
 </Note>
+
+## Prerequisites
+
+Before you begin, make sure you have:
+
+- Python 3.9 or higher
+- Redis (local or cloud)
+- Supabase account
+- Apify account with API key
+- Airtable account (optional)
+
+## Installation
+
+<Steps>
+
+<Step title="Clone and Install Dependencies">
+
+First, navigate to the server directory and install the required Python packages:
+
+```bash
+cd server
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+Key dependencies include:
+- `flask==3.0.0` - Web framework
+- `celery==5.3.4` - Background task queue
+- `redis==4.6.0` - Message broker
+- `supabase==2.9.0` - Database client
+- `apify-client==1.7.0` - Social media scraping
+
+</Step>
+
+<Step title="Install and Start Redis">
+
+Redis is required for Celery's task queue. Install and start it based on your OS:
+
+<CodeGroup>
+
+```bash macOS
+brew install redis
+brew services start redis
+```
+
+```bash Ubuntu/Debian
+sudo apt-get install redis-server
+sudo systemctl start redis
+```
+
+```bash Windows (WSL)
+sudo apt-get install redis-server
+sudo service redis-server start
+```
+
+</CodeGroup>
+
+Verify Redis is running:
+
+```bash
+redis-cli ping
+# Should return: PONG
+```
+
+</Step>
+
+<Step title="Configure Environment Variables">
+
+Create a `.env` file in the server directory with your credentials:
+
+```bash .env
+FLASK_ENV=development
+PORT=5001
+
+# Redis configuration
+REDIS_URL=redis://localhost:6379/0
+
+# Supabase credentials
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+
+# Apify configuration
+APIFY_API_KEY=your-apify-api-key
+INSTAGRAM_APIFY_ACTOR_ID=your-actor-id
+
+# Airtable (optional)
+AIRTABLE_ACCESS_TOKEN=your-airtable-token
+
+# VA Tables configuration
+NUM_VA_TABLES=80
+```
+
+<Warning>
+  Keep your `.env` file secure and never commit it to version control. Add it to `.gitignore`.
+</Warning>
+
+</Step>
+
+<Step title="Apply Database Indexes">
+
+For optimal performance, run the database indexes script once in your Supabase SQL Editor:
+
+1. Go to Supabase Dashboard → SQL Editor
+2. Click "+ New Query"
+3. Copy contents of `database_indexes.sql`
+4. Click "Run"
+
+This adds 9 critical indexes that reduce query times from 30-60s to less than 1s.
+
+</Step>
+
+<Step title="Start the Flask API">
+
+In your first terminal window, start the Flask application:
+
+```bash
+python app.py
+```
+
+You should see:
+
+```
+ * Running on http://localhost:5001
+✓ Supabase client initialized with connection pool
+✓ RLS context setup enabled for multi-tenant isolation
+```
+
+</Step>
+
+<Step title="Start the Celery Worker">
+
+In a **new terminal window**, start the Celery worker:
+
+```bash
+source venv/bin/activate
+celery -A celery_config worker --loglevel=info --concurrency=2
+```
+
+You should see:
+
+```
+[tasks]
+  . tasks.scrape_account_batch
+  . tasks.aggregate_scrape_results
+  . tasks.ingest_profiles_batch
+  . tasks.daily_pipeline_orchestrator
+
+celery@hostname ready.
+```
+
+</Step>
+
+</Steps>
+
+## Your First API Call
+
+Now that everything is running, let's make your first scraping request!
+
+### Health Check
+
+First, verify the server is running:
+
+```bash
+curl http://localhost:5001/health
+```
+
+Expected response:
+```json
+{
+  "status": "ok",
+  "service": "Instagram Scraper API",
+  "version": "1.0.0"
+}
+```
+
+### Scrape Instagram Followers
+
+Queue a job to scrape followers from Instagram accounts:
+
+```bash
+curl -X POST http://localhost:5001/api/scrape-followers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "accounts": ["nike", "adidas"],
+    "targetGender": "male",
+    "totalScrapeCount": 50
+  }'
+```
+
+<Info>
+  The API returns immediately (< 200ms) with a job ID. The actual scraping happens asynchronously in the background.
+</Info>
+
+Expected response:
+
+```json
+{
+  "success": true,
+  "job_id": "abc-123-def-456",
+  "base_id": "default_instagram",
+  "platform": "instagram",
+  "status_url": "/api/job-status/abc-123-def-456",
+  "results_url": "/api/job-results/abc-123-def-456",
+  "total_batches": 1,
+  "message": "Instagram scraping job queued successfully. Poll status_url for progress."
+}
+```
+
+### Check Job Status
+
+Poll the status endpoint to track progress:
+
+```bash
+curl http://localhost:5001/api/job-status/abc-123-def-456
+```
+
+Response while processing:
+
+```json
+{
+  "success": true,
+  "job_id": "abc-123-def-456",
+  "status": "processing",
+  "progress": 45.5,
+  "profiles_scraped": 25,
+  "total_batches": 1,
+  "current_batch": 1
+}
+```
+
+Response when complete:
+
+```json
+{
+  "success": true,
+  "job_id": "abc-123-def-456",
+  "status": "completed",
+  "progress": 100.0,
+  "profiles_scraped": 50,
+  "total_scraped": 75,
+  "total_filtered": 50
+}
+```
+
+### Get Results
+
+Once the job is complete, retrieve the scraped profiles:
+
+```bash
+curl "http://localhost:5001/api/job-results/abc-123-def-456?page=1&limit=100"
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "job_id": "abc-123-def-456",
+  "page": 1,
+  "limit": 100,
+  "total": 50,
+  "profiles": [
+    {
+      "id": "123456789",
+      "username": "john_athlete",
+      "full_name": "John Smith",
+      "created_at": "2025-10-14T12:34:56.789Z"
+    }
+  ]
+}
+```
+
+## Multi-Platform Support
+
+The API supports multiple social media platforms. Simply specify the `platform` parameter:
+
+<CodeGroup>
+
+```bash Instagram
+curl -X POST http://localhost:5001/api/scrape-followers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "accounts": ["nike"],
+    "platform": "Instagram",
+    "totalScrapeCount": 100
+  }'
+```
+
+```bash TikTok
+curl -X POST http://localhost:5001/api/scrape-followers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "accounts": ["charlidamelio"],
+    "platform": "TikTok",
+    "totalScrapeCount": 100
+  }'
+```
+
+```bash Threads
+curl -X POST http://localhost:5001/api/scrape-followers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "accounts": ["zuck"],
+    "platform": "Threads",
+    "totalScrapeCount": 100
+  }'
+```
+
+```bash X (Twitter)
+curl -X POST http://localhost:5001/api/scrape-followers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "accounts": ["elonmusk"],
+    "platform": "X",
+    "totalScrapeCount": 100
+  }'
+```
+
+</CodeGroup>
+
+## Next Steps
+
+Congratulations! You've successfully set up the scraper and made your first API call.
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Learn about the system design and how components work together
+  </Card>
+  <Card title="API Reference" icon="code" href="/api-reference">
+    Explore all available endpoints and parameters
+  </Card>
+  <Card title="Deployment" icon="rocket" href="/deployment">
+    Deploy to production on Heroku or Render
+  </Card>
+  <Card title="Performance" icon="gauge-high" href="/performance">
+    Optimize for 500K+ accounts with advanced configurations
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Redis connection refused">
+    Make sure Redis is running:
+    
+    ```bash
+    redis-cli ping
+    ```
+    
+    If it returns `PONG`, Redis is working. If not, restart Redis:
+    
+    ```bash
+    # macOS
+    brew services restart redis
+    
+    # Linux
+    sudo systemctl restart redis
+    ```
+  </Accordion>
+
+  <Accordion title="Celery tasks not processing">
+    Check that the Celery worker is running:
+    
+    ```bash
+    celery -A celery_config inspect active
+    ```
+    
+    View worker logs for errors:
+    
+    ```bash
+    celery -A celery_config worker --loglevel=debug
+    ```
+  </Accordion>
+
+  <Accordion title="Job stuck in 'processing' status">
+    This usually indicates the Celery worker crashed. Check worker logs:
+    
+    ```bash
+    # View recent Celery logs
+    tail -f celery.log
+    ```
+    
+    Restart the worker:
+    
+    ```bash
+    celery -A celery_config worker --loglevel=info --concurrency=2
+    ```
+  </Accordion>
+
+  <Accordion title="Supabase connection errors">
+    Verify your Supabase credentials in `.env`:
+    
+    ```bash
+    echo $SUPABASE_URL
+    echo $SUPABASE_SERVICE_ROLE_KEY
+    ```
+    
+    Make sure you're using the **service role key**, not the anon key.
+  </Accordion>
+</AccordionGroup>
+
+<Tip>
+  For production deployment, see our [Deployment Guide](/deployment) with configurations for Heroku and Render.
+</Tip>

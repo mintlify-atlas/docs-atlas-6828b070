@@ -1,0 +1,471 @@
+---
+title: Common Issues
+description: Solutions to frequently encountered problems in the Click Creators Scraper Server
+---
+
+## Common Issues and Solutions
+
+This guide addresses the most frequently encountered issues when running the scraper server.
+
+<AccordionGroup>
+  <Accordion title="API Returns 500 Internal Server Error">
+    
+### Symptoms
+- API endpoints returning 500 status code
+- Server crashes or restarts unexpectedly
+- Error messages in logs
+
+### Common Causes
+
+**1. Missing Environment Variables**
+
+Check that all required environment variables are set:
+
+```bash
+# Check environment configuration
+heroku config | grep SUPABASE
+heroku config | grep APIFY
+heroku config | grep REDIS
+```
+
+Required variables from `app.py:190-194`:
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `APIFY_API_KEY`
+- `REDIS_URL`
+
+**2. Redis Connection Issues**
+
+From `celery_config.py:19-26`, the system auto-detects SSL requirements:
+
+```bash
+# Test Redis connection
+heroku redis:cli
+# If successful, type: PING
+# Expected response: PONG
+```
+
+**3. Supabase Connection Pool Exhaustion**
+
+The system uses connection pooling (`app.py:201`). Check pool size:
+
+```bash
+# Check current pool size (default: 5)
+heroku config:get SUPABASE_POOL_SIZE
+
+# Increase if needed (for paid tiers)
+heroku config:set SUPABASE_POOL_SIZE=10
+```
+
+### Solutions
+
+<Steps>
+  <Step title="Check Logs">
+    ```bash
+    heroku logs --tail
+    ```
+  </Step>
+  
+  <Step title="Verify Environment Variables">
+    ```bash
+    heroku config
+    ```
+    Ensure all required variables are set correctly.
+  </Step>
+  
+  <Step title="Restart Workers">
+    ```bash
+    heroku restart worker
+    heroku restart web
+    ```
+  </Step>
+  
+  <Step title="Check Sentry (if configured)">
+    If `SENTRY_DSN` is set (`app.py:61-74`), check Sentry dashboard for detailed error traces.
+  </Step>
+</Steps>
+
+  </Accordion>
+
+  <Accordion title="Jobs Not Processing / Stuck in Queue">
+
+### Symptoms
+- Jobs status remains "queued" indefinitely
+- `profiles_scraped` count not increasing
+- Worker logs show no activity
+
+### Diagnosis
+
+**Check Redis Queue Length:**
+
+```bash
+heroku redis:cli
+> LLEN celery
+# Shows number of pending tasks
+```
+
+**Check Worker Status:**
+
+```bash
+heroku ps
+# Look for worker dynos
+
+heroku logs --tail --dyno worker
+# Monitor worker activity
+```
+
+### Common Causes
+
+**1. No Workers Running**
+
+```bash
+# Check worker count
+heroku ps:scale
+
+# Scale up workers if needed
+heroku ps:scale worker=4
+```
+
+**2. Worker Crashes**
+
+From `celery_config.py:43-45`, tasks have time limits:
+- Hard limit: 2 hours
+- Soft limit: 1h 55m
+
+Check for timeout errors:
+
+```bash
+heroku logs --tail --dyno worker | grep "SoftTimeLimitExceeded"
+```
+
+**3. Redis Connection Lost**
+
+From `celery_config.py:65`, connection retry is enabled. Check logs:
+
+```bash
+heroku logs | grep "broker connection"
+```
+
+### Solutions
+
+<Warning>
+  Always check worker logs before restarting to identify root cause.
+</Warning>
+
+```bash
+# 1. View worker logs
+heroku logs --tail --dyno worker
+
+# 2. Check Redis health
+heroku redis:info
+
+# 3. Restart workers
+heroku restart worker
+
+# 4. Verify job status in database
+curl https://your-app.herokuapp.com/api/job-status/JOB_ID
+```
+
+  </Accordion>
+
+  <Accordion title="Database Connection Issues">
+
+### Symptoms
+- Error: "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables are required"
+- Connection timeouts
+- "Too many connections" errors
+
+### Root Cause
+
+From `app.py:163-221`, the system uses singleton pattern with connection pooling to prevent connection exhaustion.
+
+**Free Tier Limits:**
+- Max 50 concurrent connections
+- System uses 1 pooled connection per process (default: 5)
+
+### Solutions
+
+**1. Verify Credentials:**
+
+```bash
+# Check if variables are set
+heroku config | grep SUPABASE
+
+# Set if missing
+heroku config:set SUPABASE_URL=https://xxx.supabase.co
+heroku config:set SUPABASE_SERVICE_ROLE_KEY=your-key
+```
+
+**2. Check Connection Pool:**
+
+From `app.py:201`, pool size is configurable:
+
+```bash
+# View current pool size
+heroku config:get SUPABASE_POOL_SIZE
+
+# Adjust for your tier
+# Free tier: 5 (default, safe)
+# Pro tier: 20-30
+heroku config:set SUPABASE_POOL_SIZE=5
+```
+
+**3. Monitor Active Connections:**
+
+In Supabase dashboard:
+1. Go to Database → Connection pooling
+2. Check active connections
+3. Ensure < 50 for free tier
+
+<Note>
+  The singleton pattern (`app.py:165-166`) ensures only one client per process, preventing connection leaks.
+</Note>
+
+  </Accordion>
+
+  <Accordion title="Apify Scraping Failures">
+
+### Symptoms
+- Error: "Failed to scrape followers after 3 attempts"
+- Rate limit errors (429)
+- Empty results returned
+
+### Diagnosis
+
+From `utils/scraper.py:154-200`, the scraper has built-in retry logic with exponential backoff:
+- Max retries: 3
+- Backoff: 0s → 2s → 8s → 32s
+
+**Check Logs for Specific Error:**
+
+```bash
+heroku logs | grep "Apify"
+```
+
+Common error patterns:
+- `rate limit` or `429` → Rate limiting
+- `connection` or `timeout` → Network issues
+- `APIFY_API_KEY` → Authentication issues
+
+### Solutions
+
+**1. Rate Limiting:**
+
+```bash
+# Check Apify usage
+# Visit: https://console.apify.com/account/usage
+
+# Reduce concurrent workers
+heroku ps:scale worker=2
+```
+
+**2. Invalid API Key:**
+
+```bash
+# Verify API key
+heroku config:get APIFY_API_KEY
+
+# Update if needed
+heroku config:set APIFY_API_KEY=apify_api_xxx
+```
+
+**3. Actor Configuration:**
+
+From `utils/scraper.py:18-59`, different platforms need different actor IDs:
+
+```bash
+# Instagram (required)
+heroku config:set INSTAGRAM_APIFY_ACTOR_ID=apify/instagram-scraper
+
+# TikTok (optional)
+heroku config:set TIKTOK_APIFY_ACTOR_ID=apify/tiktok-scraper
+
+# Threads (optional)
+heroku config:set THREADS_APIFY_ACTOR_ID=apify/threads-scraper
+
+# X/Twitter (optional)
+heroku config:set X_APIFY_ACTOR_ID=apify/twitter-scraper
+```
+
+<Info>
+  The scraper automatically retries on failures. From `utils/scraper.py:155-161`, it waits with exponential backoff before retrying.
+</Info>
+
+  </Accordion>
+
+  <Accordion title="Memory Issues / Worker Crashes">
+
+### Symptoms
+- Workers restarting frequently
+- R14 (Memory quota exceeded) errors
+- Slow performance
+
+### Diagnosis
+
+```bash
+# Monitor memory usage
+heroku logs --tail | grep "R14\|R15"
+
+# Check dyno metrics
+heroku ps
+```
+
+### Memory Limits by Dyno Type
+- Free/Eco: 512 MB
+- Basic: 512 MB
+- Standard-1x: 512 MB
+- Standard-2x: 1 GB
+- Performance-M: 2.5 GB
+
+### Solutions
+
+**1. Worker Task Limit**
+
+From `celery_config.py:45`, workers restart after 50 tasks to prevent memory leaks:
+
+```python
+worker_max_tasks_per_child=50  # Auto-restart for memory cleanup
+```
+
+This is automatic, no configuration needed.
+
+**2. Reduce Batch Sizes**
+
+From `utils/batch_processor.py:17-18`:
+
+```python
+batch_size: int = 1000  # Profiles per batch
+rate_limit_delay: float = 0.1  # 100ms delay
+```
+
+To reduce memory:
+
+```bash
+# Adjust in code if needed
+# Default batch_size=1000 is safe for most cases
+# For heavy memory usage, reduce to 500
+```
+
+**3. Upgrade Dyno Type**
+
+```bash
+# Check current dyno types
+heroku ps
+
+# Upgrade workers to performance dynos
+heroku ps:scale worker=4:performance-m
+```
+
+**4. Clear Memory-Heavy Objects**
+
+From `utils/scraper.py:274-276`, the scraper cleans up DataFrames:
+
+```python
+# Clear DataFrame from memory
+del followers_df
+del data
+```
+
+This is automatic and built-in.
+
+  </Accordion>
+
+  <Accordion title="Rate Limiting on API Endpoints">
+
+### Symptoms
+- 429 Too Many Requests response
+- Error: "Rate limit exceeded"
+
+### Rate Limits
+
+From `app.py:99`, default rate limit:
+
+```python
+default_limits=["200 per hour"]
+```
+
+### Check Rate Limit Headers
+
+```bash
+curl -i https://your-app.herokuapp.com/api/ingest
+# Look for:
+# X-RateLimit-Limit: 200
+# X-RateLimit-Remaining: 150
+# X-RateLimit-Reset: 1234567890
+```
+
+### Increase Rate Limit
+
+Edit `app.py:99` and redeploy:
+
+```python
+default_limits=["500 per hour"]  # Increase from 200 to 500
+```
+
+Or apply to specific endpoints:
+
+```python
+@app.route('/api/scrape-followers', methods=['POST'])
+@limiter.limit("100 per hour")  # Custom limit for this endpoint
+def scrape_followers_api():
+    ...
+```
+
+<Warning>
+  High rate limits can strain your database. Monitor Supabase usage after increasing.
+</Warning>
+
+  </Accordion>
+</AccordionGroup>
+
+## Quick Diagnostics Checklist
+
+<Steps>
+  <Step title="Check Service Health">
+    ```bash
+    curl https://your-app.herokuapp.com/health
+    ```
+    Expected: `{"status": "ok", "service": "Instagram Scraper API"}`
+  </Step>
+  
+  <Step title="Verify All Dynos Running">
+    ```bash
+    heroku ps
+    ```
+    Ensure web and worker dynos are up.
+  </Step>
+  
+  <Step title="Check Redis Connection">
+    ```bash
+    heroku redis:cli
+    > PING
+    ```
+    Expected: PONG
+  </Step>
+  
+  <Step title="Monitor Logs">
+    ```bash
+    heroku logs --tail
+    ```
+    Look for ERROR or WARNING messages.
+  </Step>
+  
+  <Step title="Test Database Connection">
+    ```bash
+    curl -X POST https://your-app.herokuapp.com/api/ingest \
+      -H "Content-Type: application/json" \
+      -d '{"profiles": [], "base_id": "test"}'
+    ```
+    Should return success with 0 inserted.
+  </Step>
+</Steps>
+
+## Getting More Help
+
+If issues persist:
+
+1. **Check Sentry Dashboard** (if configured): `app.py:61-74`
+2. **Review Full Logs**: `heroku logs --tail --num 1000`
+3. **Check Supabase Logs**: In Supabase dashboard → Logs
+4. **Monitor Apify Usage**: https://console.apify.com/account/usage
+5. **Database Metrics**: Run queries from monitoring section

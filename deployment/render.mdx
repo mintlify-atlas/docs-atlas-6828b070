@@ -1,0 +1,456 @@
+---
+title: 'Deploy to Render'
+description: 'Deploy the Instagram Scraper API to Render with Infrastructure as Code using render.yaml blueprint'
+---
+
+## Overview
+
+Render provides a modern cloud platform with native support for Infrastructure as Code. The scraper includes a complete `render.yaml` blueprint that automatically provisions all required services.
+
+<Info>
+  The free tier configuration runs both Flask and Celery in a single web service to stay within Render's 1 free web service limit.
+</Info>
+
+## Prerequisites
+
+- GitHub account with repository access
+- Render account (free tier available)
+- Supabase account and credentials
+- Apify API key
+- Airtable access token (optional)
+
+## Infrastructure as Code
+
+The `render.yaml` blueprint defines two services:
+
+```yaml render.yaml
+services:
+  # Redis Service (Celery broker)
+  - type: redis
+    name: aivs-redis
+    region: oregon
+    plan: free
+    maxmemoryPolicy: noeviction
+    ipAllowList: []
+
+  # Web Service (Flask + Celery combined)
+  - type: web
+    name: aivs-instagram-scraper-api
+    region: oregon
+    runtime: python
+    plan: free
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: bash start_combined.sh
+    healthCheckPath: /healthz
+    envVars:
+      # Environment variables defined below
+```
+
+## Deployment Steps
+
+<Steps>
+  <Step title="Connect GitHub Repository">
+    1. Log in to [Render Dashboard](https://dashboard.render.com)
+    2. Click "New +" → "Blueprint"
+    3. Connect your GitHub account
+    4. Select the scraper repository
+    5. Grant Render access to the repository
+  </Step>
+
+  <Step title="Configure Service Name">
+    Render will detect the `render.yaml` file automatically:
+    
+    - Review the service names
+    - Confirm the branch (default: `main`)
+    - Click "Apply"
+
+    <Tip>
+      You can customize service names in `render.yaml` before deploying.
+    </Tip>
+  </Step>
+
+  <Step title="Set Environment Variables">
+    Configure the required environment variables in Render dashboard:
+
+    **Required Variables:**
+    ```bash
+    SUPABASE_URL=https://your-project.supabase.co
+    SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+    APIFY_API_KEY=your-apify-api-key
+    INSTAGRAM_APIFY_ACTOR_ID=your-instagram-actor-id
+    ```
+
+    **Optional Variables:**
+    ```bash
+    AIRTABLE_ACCESS_TOKEN=your-airtable-token
+    AIRTABLE_BASE_ID=your-base-id
+    TIKTOK_APIFY_ACTOR_ID=your-tiktok-actor-id
+    THREADS_APIFY_ACTOR_ID=your-threads-actor-id
+    X_APIFY_ACTOR_ID=your-x-twitter-actor-id
+    SENTRY_DSN=your-sentry-dsn
+    ```
+
+    <Note>
+      Variables marked with `sync: false` in render.yaml must be set manually in the dashboard.
+    </Note>
+  </Step>
+
+  <Step title="Deploy Services">
+    Render automatically:
+    
+    1. Provisions Redis service
+    2. Builds the web service
+    3. Installs Python dependencies
+    4. Runs health checks
+    5. Makes the service live
+
+    Monitor deployment progress in the Render dashboard.
+  </Step>
+
+  <Step title="Apply Database Indexes">
+    After successful deployment, run database indexes in Supabase:
+
+    1. Open Supabase SQL Editor
+    2. Create new query
+    3. Paste contents of `database_indexes.sql`
+    4. Execute query
+
+    <Warning>
+      This is critical for performance. Without indexes, queries can take 30-60 seconds.
+    </Warning>
+  </Step>
+
+  <Step title="Verify Deployment">
+    Test the deployed service:
+
+    ```bash
+    # Get your Render URL from dashboard
+    export RENDER_URL=https://your-app.onrender.com
+
+    # Check health endpoint
+    curl $RENDER_URL/health
+
+    # Expected response:
+    # {"status": "healthy", "timestamp": "..."}
+    ```
+  </Step>
+</Steps>
+
+## Combined Startup Script
+
+Render free tier runs both Flask and Celery in one container using `start_combined.sh`:
+
+```bash start_combined.sh
+#!/bin/bash
+# Combined startup script for Render free tier
+# Runs both Flask web server and Celery worker in the same container
+
+# Start Celery worker in the background
+celery -A celery_config worker --loglevel=info --concurrency=2 &
+
+# Start Gunicorn web server in the foreground
+exec gunicorn wsgi:app --workers 2 --timeout 120 --bind 0.0.0.0:${PORT:-10000}
+```
+
+<Info>
+  This approach keeps you within the free tier limit of 1 web service while still supporting async task processing.
+</Info>
+
+## Environment Variables Reference
+
+### Automatic Configuration
+
+These variables are set automatically by render.yaml:
+
+| Variable | Value | Description |
+|----------|-------|-------------|
+| `PYTHON_VERSION` | `3.11.7` | Python runtime version |
+| `FLASK_ENV` | `production` | Flask environment mode |
+| `PORT` | `10000` | Web service port |
+| `REDIS_URL` | *from service* | Auto-linked from Redis service |
+| `NUM_VA_TABLES` | `80` | Number of VA tables for distribution |
+| `ALLOWED_ORIGINS` | `*` | CORS origins (update in production) |
+
+### Manual Configuration
+
+Set these in Render dashboard under "Environment":
+
+<AccordionGroup>
+  <Accordion title="Supabase Configuration">
+    ```bash
+    SUPABASE_URL=https://xxxxx.supabase.co
+    SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+    ```
+
+    Find these in your Supabase project settings under API.
+  </Accordion>
+
+  <Accordion title="Apify Configuration">
+    ```bash
+    APIFY_API_KEY=apify_api_xxxxxxxxxxxxx
+    INSTAGRAM_APIFY_ACTOR_ID=apify/instagram-scraper
+    ```
+
+    Optional platform-specific actors:
+    ```bash
+    TIKTOK_APIFY_ACTOR_ID=apify/tiktok-scraper
+    THREADS_APIFY_ACTOR_ID=apify/threads-scraper
+    X_APIFY_ACTOR_ID=apify/twitter-scraper
+    ```
+  </Accordion>
+
+  <Accordion title="Airtable Configuration">
+    ```bash
+    AIRTABLE_ACCESS_TOKEN=patxxxxxxxxxxxxx
+    AIRTABLE_BASE_ID=appxxxxxxxxxxxxx
+    ```
+
+    Only required if using Airtable VA distribution features.
+  </Accordion>
+
+  <Accordion title="Optional: Error Tracking">
+    ```bash
+    SENTRY_DSN=https://xxxxx@sentry.io/xxxxx
+    ```
+
+    Enable Sentry for production error tracking and monitoring.
+  </Accordion>
+</AccordionGroup>
+
+## Service Configuration
+
+### Redis Service
+
+```yaml
+type: redis
+name: aivs-redis
+region: oregon
+plan: free
+maxmemoryPolicy: noeviction
+ipAllowList: []
+```
+
+**Configuration Details:**
+- **Free tier**: 25MB storage, sufficient for task queue
+- **noeviction policy**: Prevents data loss when memory is full
+- **No IP restrictions**: Required for free tier
+
+### Web Service
+
+```yaml
+type: web
+name: aivs-instagram-scraper-api
+runtime: python
+plan: free
+buildCommand: pip install -r requirements.txt
+startCommand: bash start_combined.sh
+healthCheckPath: /healthz
+```
+
+**Configuration Details:**
+- **Free tier**: 512MB RAM, 0.1 CPU
+- **Auto-deploy**: Triggered on git push to main
+- **Health checks**: Automatic service health monitoring
+- **Build cache**: Speeds up subsequent deployments
+
+## Monitoring and Logs
+
+### View Logs
+
+Access logs through Render dashboard:
+
+1. Navigate to your service
+2. Click "Logs" tab
+3. View real-time streaming logs
+
+**Search logs:**
+```bash
+# In Render logs interface, use filters:
+- Level: ERROR, WARNING, INFO
+- Time range: Last hour, 24 hours, etc.
+- Text search: Search for specific terms
+```
+
+### Service Metrics
+
+Render provides built-in metrics:
+
+- **CPU usage**: Monitor worker load
+- **Memory usage**: Detect memory leaks
+- **Request rate**: API traffic patterns
+- **Response time**: API performance
+
+### Health Checks
+
+Render automatically monitors `/healthz` endpoint:
+
+```python
+@app.route('/healthz')
+def health_check():
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.utcnow().isoformat()
+    }), 200
+```
+
+If health checks fail, Render automatically restarts the service.
+
+## Scaling on Render
+
+### Free Tier Limitations
+
+<Warning>
+  Free tier services spin down after 15 minutes of inactivity. First request after spin-down takes 30-60 seconds.
+</Warning>
+
+**Free Tier Specs:**
+- 1 web service
+- 512MB RAM
+- 0.1 CPU cores
+- Auto-sleep after inactivity
+
+### Upgrading to Paid Plans
+
+For production workloads:
+
+```yaml
+plan: starter  # $7/month - 512MB RAM, always on
+plan: standard # $25/month - 2GB RAM, 1 CPU
+plan: pro      # $85/month - 4GB RAM, 2 CPU
+```
+
+### Separate Worker Service
+
+For higher scale, split Flask and Celery:
+
+```yaml render.yaml
+services:
+  # Web Service (Flask only)
+  - type: web
+    name: aivs-api
+    startCommand: gunicorn wsgi:app --workers 2
+    
+  # Worker Service (Celery only)
+  - type: worker
+    name: aivs-worker
+    startCommand: celery -A celery_config worker --concurrency=4
+```
+
+<Tip>
+  This requires a paid plan but provides better scalability and isolation.
+</Tip>
+
+## Continuous Deployment
+
+### Auto-Deploy on Push
+
+Render automatically deploys when you push to the configured branch:
+
+```bash
+# Make changes
+git add .
+git commit -m "Update scraping logic"
+git push origin main
+
+# Render automatically:
+# 1. Detects the push
+# 2. Runs build command
+# 3. Deploys new version
+# 4. Runs health checks
+```
+
+### Deploy Hooks
+
+Trigger manual deploys via webhook:
+
+```bash
+# Get deploy hook from Render dashboard
+curl -X POST https://api.render.com/deploy/srv-xxxxx
+```
+
+### Preview Environments
+
+Create preview environments for PRs:
+
+1. Enable PR previews in Render dashboard
+2. Each PR gets a unique URL
+3. Test changes before merging
+
+## Troubleshooting
+
+### Build Failures
+
+```bash
+# Check requirements.txt for issues
+# Common fixes:
+
+# Pin versions
+flask==3.0.0
+celery==5.3.4
+
+# Specify Python version in runtime.txt
+python-3.12.8
+```
+
+### Service Not Starting
+
+Check logs for errors:
+```bash
+# Common issues:
+- Missing environment variables
+- Redis connection failures
+- Port binding errors (use $PORT)
+```
+
+### Redis Connection Issues
+
+```bash
+# Verify Redis URL is set
+echo $REDIS_URL
+
+# Should output: redis://red-xxxxx:6379
+
+# Check Redis service status in dashboard
+# Ensure both services are in same region
+```
+
+### Health Check Failures
+
+```bash
+# Verify /healthz endpoint works locally
+curl http://localhost:5001/healthz
+
+# Check health check path in render.yaml
+healthCheckPath: /healthz
+
+# Review service logs for startup errors
+```
+
+## Comparing Render vs Heroku
+
+| Feature | Render | Heroku |
+|---------|--------|--------|
+| **Free Tier** | 512MB, auto-sleep | 512MB (deprecated) |
+| **IaC Support** | render.yaml | app.json |
+| **Auto-Deploy** | Yes, built-in | Yes, via GitHub integration |
+| **Redis** | Free 25MB | Mini $3/month |
+| **SSL** | Free | Free |
+| **Custom Domain** | Free | Free |
+| **DDoS Protection** | Included | Included |
+| **Pricing** | $7/month starter | $7/month basic |
+
+<Tip>
+  Render's free tier is ideal for development and testing. For production, both platforms offer similar pricing and features.
+</Tip>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Scaling Guide" icon="chart-line" href="/deployment/scaling">
+    Learn how to scale for production workloads
+  </Card>
+  <Card title="Heroku Deployment" icon="cloud" href="/deployment/heroku">
+    Deploy on Heroku as an alternative platform
+  </Card>
+</CardGroup>

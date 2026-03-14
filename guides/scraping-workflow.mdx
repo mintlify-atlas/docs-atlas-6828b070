@@ -1,0 +1,321 @@
+---
+title: 'Scraping Workflow'
+description: 'Learn how the multi-platform scraping workflow operates from API request to result storage'
+---
+
+The Click Creators Scraper Server uses an asynchronous, batch-based workflow to scrape follower data from multiple social media platforms at scale. This guide explains the complete workflow from API request to result retrieval.
+
+## Architecture Overview
+
+The scraping system is built on a distributed task queue architecture:
+
+- **Flask API**: Handles HTTP requests and job management
+- **Celery Workers**: Process scraping tasks asynchronously in the background
+- **Supabase**: Stores job metadata, results, and profile data
+- **Apify**: External scraping service for multi-platform data extraction
+
+<Info>
+  The system is optimized for 500K+ profile scraping with connection pooling, rate limiting, and retry logic.
+</Info>
+
+## Workflow Steps
+
+<Steps>
+  <Step title="Submit Scrape Request">
+    Send a POST request to `/api/scrape-followers` with your target accounts and configuration:
+
+    ```bash
+    curl -X POST https://your-server.com/api/scrape-followers \
+      -H "Content-Type: application/json" \
+      -H "X-Base-Id: appXYZ123ABC" \
+      -d '{
+        "accounts": ["nike", "adidas", "puma"],
+        "platform": "instagram",
+        "targetGender": "male",
+        "totalScrapeCount": 150
+      }'
+    ```
+
+    **Response:**
+    ```json
+    {
+      "success": true,
+      "job_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "base_id": "appXYZ123ABC",
+      "platform": "instagram",
+      "status_url": "/api/job-status/a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "results_url": "/api/job-results/a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "total_batches": 1,
+      "message": "Instagram scraping job queued successfully. Poll status_url for progress."
+    }
+    ```
+  </Step>
+
+  <Step title="Job Initialization">
+    The API server creates a job record in Supabase:
+
+    - **Job ID**: Unique UUID for tracking
+    - **Status**: Initially set to `queued`, then `processing`
+    - **Batches**: Accounts split into batches of 50 for parallel processing
+    - **Configuration**: Platform, gender filter, max count stored
+
+    ```python
+    # From api_async.py:138-151
+    supabase.table('scrape_jobs').insert({
+        'job_id': job_id,
+        'status': 'queued',
+        'accounts': accounts,
+        'target_gender': target_gender,
+        'max_count_per_account': per_account_count,
+        'total_batches': total_batches,
+        'current_batch': 0,
+        'progress': 0.0,
+        'profiles_scraped': 0,
+        'base_id': base_id,
+        'platform': platform,
+        'created_at': datetime.now(timezone.utc).isoformat()
+    }).execute()
+    ```
+  </Step>
+
+  <Step title="Parallel Batch Processing">
+    The system uses Celery's **chord pattern** to process batches in parallel:
+
+    ```python
+    # From api_async.py:158-175
+    batch_tasks = []
+    for i, batch in enumerate(account_batches, 1):
+        task = scrape_account_batch.s(
+            job_id=job_id,
+            accounts=batch,
+            target_gender=target_gender,
+            max_per_account=per_account_count,
+            batch_number=i,
+            base_id=base_id,
+            platform=platform
+        )
+        batch_tasks.append(task)
+    
+    # All batches run in parallel, then aggregation runs
+    workflow = chord(batch_tasks)(
+        aggregate_scrape_results.s(job_id=job_id, base_id=base_id)
+    )
+    ```
+
+    Each batch task (`scrape_account_batch`):
+    1. Calls Apify with platform-specific configuration
+    2. Detects gender using name-based analysis
+    3. Filters profiles by target gender
+    4. Returns filtered results
+  </Step>
+
+  <Step title="Apify Scraping">
+    The `scrape_followers` function handles platform-specific scraping:
+
+    ```python
+    # From utils/scraper.py:62-102
+    def scrape_followers(
+        accounts: List[str], 
+        max_count: int = 5,
+        platform: str = 'instagram'
+    ) -> Dict[str, Dict]:
+        # Get platform-specific Apify actor
+        actor_key = get_actor_id_for_platform(platform)
+        
+        # Platform-specific input format
+        if platform == 'tiktok':
+            run_input = {
+                "usernames": accounts,
+                "numFollowers": max_count,
+            }
+        elif platform == 'instagram':
+            run_input = {
+                "usernames": accounts,
+                "max_count": max_count,
+            }
+        
+        # Call Apify with retry logic (3 attempts, exponential backoff)
+        run = client.actor(actor_key).call(run_input=run_input)
+    ```
+
+    <Note>
+      The scraper includes automatic retry with exponential backoff (0s, 2s, 8s) to handle rate limits and network errors.
+    </Note>
+  </Step>
+
+  <Step title="Result Aggregation">
+    After all batches complete, the `aggregate_scrape_results` task:
+
+    - Combines profiles from all batches
+    - Inserts results into `scrape_results` table in chunks of 1000
+    - Updates job status to `completed`
+    - Stores total metrics (scraped, filtered)
+
+    ```python
+    # From tasks.py:253-276
+    # Batch insert into scrape_results (chunks of 1000)
+    batch_size = 1000
+    for i in range(0, len(all_profiles), batch_size):
+        batch = all_profiles[i:i + batch_size]
+        records = [
+            {
+                'job_id': job_id,
+                'profile_id': profile['id'],
+                'username': profile['username'],
+                'full_name': profile.get('full_name', ''),
+                'created_at': datetime.now(timezone.utc).isoformat()
+            }
+            for profile in batch
+        ]
+        supabase.table('scrape_results').insert(records).execute()
+    ```
+  </Step>
+
+  <Step title="Monitor Progress">
+    Poll the job status endpoint to track progress:
+
+    ```bash
+    curl https://your-server.com/api/job-status/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+    ```
+
+    **Response:**
+    ```json
+    {
+      "success": true,
+      "job_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "status": "processing",
+      "progress": 65.5,
+      "profiles_scraped": 98,
+      "total_batches": 1,
+      "current_batch": 1,
+      "created_at": "2026-03-14T10:30:00Z",
+      "started_at": "2026-03-14T10:30:02Z",
+      "completed_at": null
+    }
+    ```
+  </Step>
+
+  <Step title="Retrieve Results">
+    Once status is `completed`, fetch results with pagination:
+
+    ```bash
+    curl "https://your-server.com/api/job-results/a1b2c3d4-e5f6-7890-abcd-ef1234567890?page=1&limit=1000"
+    ```
+
+    **Response:**
+    ```json
+    {
+      "success": true,
+      "job_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "page": 1,
+      "limit": 1000,
+      "total": 150,
+      "profiles": [
+        {
+          "id": "123456789",
+          "username": "john_doe",
+          "full_name": "John Doe",
+          "created_at": "2026-03-14T10:35:00Z"
+        }
+      ]
+    }
+    ```
+  </Step>
+</Steps>
+
+## Rate Limiting
+
+The `/api/scrape-followers` endpoint is rate limited to **10 requests per hour** to prevent abuse of expensive Apify operations:
+
+```python
+# From api_async.py:35-36
+@app.route('/api/scrape-followers', methods=['POST'])
+@limiter.limit("10 per hour")
+```
+
+<Warning>
+  Exceeding rate limits will result in HTTP 429 (Too Many Requests) responses. Plan your scraping jobs accordingly.
+</Warning>
+
+## Multi-Tenant Isolation
+
+Every request includes a `base_id` for data isolation:
+
+<Tabs>
+  <Tab title="Header">
+    ```bash
+    curl -X POST https://your-server.com/api/scrape-followers \
+      -H "X-Base-Id: appXYZ123ABC" \
+      -H "Content-Type: application/json" \
+      -d '{...}'
+    ```
+  </Tab>
+  
+  <Tab title="Body">
+    ```bash
+    curl -X POST https://your-server.com/api/scrape-followers \
+      -H "Content-Type: application/json" \
+      -d '{
+        "accounts": ["nike"],
+        "base_id": "appXYZ123ABC"
+      }'
+    ```
+  </Tab>
+</Tabs>
+
+The `base_id` is used for:
+- Row-Level Security (RLS) in Supabase
+- Isolating data between different clients/bases
+- Campaign tracking and organization
+
+## Error Handling
+
+The system includes comprehensive error handling:
+
+- **Retry Logic**: 3 attempts with exponential backoff for Apify failures
+- **Job Failure Tracking**: Errors stored in `scrape_jobs.error_message`
+- **Batch Resilience**: Individual batch failures don't stop the entire job
+- **Graceful Degradation**: Falls back to individual inserts if bulk operations fail
+
+```python
+# From tasks.py:194-214
+try:
+    # Scraping logic
+except SoftTimeLimitExceeded:
+    logger.error(f"[Job {job_id}] Task exceeded time limit")
+    raise
+except Exception as e:
+    logger.error(f"[Job {job_id}] Error - {str(e)}")
+    supabase.table('scrape_jobs').update({
+        'status': 'failed',
+        'error_message': str(e)
+    }).eq('job_id', job_id).execute()
+    raise
+```
+
+## Performance Optimizations
+
+The scraping workflow includes several optimizations for 500K+ scale:
+
+1. **Connection Pooling**: Thread-safe Supabase client singleton (tasks.py:30-85)
+2. **Batch Processing**: Accounts split into 50-account batches for parallel execution
+3. **Chunked Inserts**: Results inserted in 1000-record chunks to avoid payload limits
+4. **Rate Limiting**: 100ms delays between batches to prevent throttling
+5. **Memory Efficiency**: Row-by-row DataFrame processing, immediate cleanup
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Job Tracking" icon="chart-line" href="/guides/job-tracking">
+    Learn how to monitor and manage scraping jobs
+  </Card>
+  <Card title="Batch Processing" icon="layer-group" href="/guides/batch-processing">
+    Understand batch operations and bulk inserts
+  </Card>
+  <Card title="Multi-Platform" icon="globe" href="/guides/multi-platform-support">
+    Configure scraping for different social platforms
+  </Card>
+  <Card title="Airtable Integration" icon="table" href="/guides/airtable-integration">
+    Sync scraped data to Airtable tables
+  </Card>
+</CardGroup>

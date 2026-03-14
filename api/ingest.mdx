@@ -1,0 +1,200 @@
+---
+title: 'Ingest Profiles'
+description: 'Ingest scraped social media profiles into the database for campaign management'
+---
+
+## Overview
+
+The `/api/ingest` endpoint ingests scraped social media profiles into Supabase. This endpoint is idempotent - calling it multiple times with the same profiles will not create duplicates in the `global_usernames` table.
+
+## Endpoint
+
+```
+POST /api/ingest
+```
+
+## Authentication
+
+Requires a valid `base_id` to be passed via:
+- **Header**: `X-Base-Id: appXYZ123ABC`
+- **Request Body**: `{ "base_id": "appXYZ123ABC" }`
+
+<Note>
+The header takes precedence over the body parameter if both are provided.
+</Note>
+
+## Request Parameters
+
+### Headers
+
+<ParamField header="X-Base-Id" type="string" required>
+  Airtable base ID for multi-tenant isolation. Must start with `app` followed by alphanumeric characters.
+</ParamField>
+
+<ParamField header="Content-Type" type="string" default="application/json">
+  Must be `application/json`
+</ParamField>
+
+### Body
+
+<ParamField body="profiles" type="array" required>
+  Array of profile objects to ingest. Each profile must contain `id` and `username` fields.
+  
+  <Expandable title="Profile Object Schema">
+    <ParamField body="id" type="string" required>
+      Unique identifier for the profile (e.g., Instagram user ID)
+    </ParamField>
+    
+    <ParamField body="username" type="string" required>
+      Username/handle for the profile
+    </ParamField>
+    
+    <ParamField body="full_name" type="string">
+      Full name or display name of the user
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="base_id" type="string">
+  Airtable base ID (optional if provided via header)
+</ParamField>
+
+## Response
+
+<ResponseField name="success" type="boolean" required>
+  Indicates whether the operation completed successfully
+</ResponseField>
+
+<ResponseField name="base_id" type="string" required>
+  The base_id used for this operation
+</ResponseField>
+
+<ResponseField name="inserted_raw" type="integer" required>
+  Number of profiles inserted into `raw_scraped_profiles` table
+</ResponseField>
+
+<ResponseField name="added_to_global" type="integer" required>
+  Number of new profiles added to `global_usernames` table
+</ResponseField>
+
+<ResponseField name="skipped_existing" type="integer" required>
+  Number of profiles that already existed in `global_usernames` for this base_id
+</ResponseField>
+
+## Example Request
+
+```bash
+curl -X POST https://api.example.com/api/ingest \
+  -H "Content-Type: application/json" \
+  -H "X-Base-Id: appXYZ123ABC" \
+  -d '{
+    "profiles": [
+      {
+        "id": "123456789",
+        "username": "john_doe",
+        "full_name": "John Doe"
+      },
+      {
+        "id": "987654321",
+        "username": "jane_smith",
+        "full_name": "Jane Smith"
+      }
+    ]
+  }'
+```
+
+## Example Response
+
+```json
+{
+  "success": true,
+  "base_id": "appXYZ123ABC",
+  "inserted_raw": 2,
+  "added_to_global": 2,
+  "skipped_existing": 0
+}
+```
+
+## Error Responses
+
+### Missing Profiles Field
+
+```json
+{
+  "success": false,
+  "error": "Missing \"profiles\" field in request body"
+}
+```
+
+**Status Code:** `400 Bad Request`
+
+### Invalid Profiles Format
+
+```json
+{
+  "success": false,
+  "error": "Profiles must be a list"
+}
+```
+
+**Status Code:** `400 Bad Request`
+
+### Invalid Base ID Format
+
+```json
+{
+  "success": false,
+  "error": "Invalid base_id format: xyz123"
+}
+```
+
+**Status Code:** `400 Bad Request`
+
+### Server Error
+
+```json
+{
+  "success": false,
+  "error": "Database connection failed"
+}
+```
+
+**Status Code:** `500 Internal Server Error`
+
+## Behavior Details
+
+### Idempotency
+
+This endpoint is designed to be idempotent. When you ingest the same profile multiple times:
+
+1. **Raw Scraped Profiles**: Each ingest creates a new record in `raw_scraped_profiles` with a timestamp
+2. **Global Usernames**: Only the first ingest adds the profile to `global_usernames`. Subsequent ingests skip the profile and increment `skipped_existing`
+
+### Multi-Tenant Isolation
+
+All profiles are scoped to the provided `base_id`. This means:
+- Profiles with the same `id` can exist across different `base_id` values
+- Row-Level Security (RLS) policies ensure data isolation between tenants
+- Each `base_id` represents a separate campaign or client
+
+### Database Operations
+
+1. **Insert into raw_scraped_profiles**: Records all scraped data with timestamp
+2. **Check global_usernames**: Queries for existing profile by `id` and `base_id`
+3. **Insert into global_usernames**: Adds new profiles with `used=false` flag
+
+## Usage Notes
+
+<Warning>
+Profiles with missing `id` or `username` fields will be skipped with a warning logged. Ensure all profiles contain these required fields.
+</Warning>
+
+<Tip>
+For optimal performance when ingesting large batches, consider splitting requests into chunks of 1000-5000 profiles.
+</Tip>
+
+## Related Endpoints
+
+- [Daily Selection](/api/daily-selection) - Select unused profiles for a campaign
+- [Distribute Campaign](/api/distribute) - Distribute selected profiles to VA tables
+- [Airtable Sync](/api/airtable-sync) - Sync distributed profiles to Airtable
