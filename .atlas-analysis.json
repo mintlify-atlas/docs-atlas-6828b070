@@ -1,0 +1,157 @@
+{
+  "projectType": "api-service",
+  "projectName": "Click Creators Scraper Server",
+  "projectDescription": "Asynchronous Instagram scraper API capable of handling 1,000,000 accounts per month with Celery task processing and multi-platform support",
+  "theme": "aspen",
+  "primaryColor": "#7C3AED",
+  "lightColor": "#A78BFA",
+  "darkColor": "#5B21B6",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Installation & Setup",
+            "pages": [
+              "setup/local-development",
+              "setup/environment-variables",
+              "setup/database-setup"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/heroku",
+              "deployment/render",
+              "deployment/scaling"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/scraping-workflow",
+              "guides/job-tracking",
+              "guides/batch-processing",
+              "guides/multi-platform-support",
+              "guides/airtable-integration"
+            ]
+          },
+          {
+            "group": "Performance",
+            "pages": [
+              "performance/optimizations",
+              "performance/free-tier-compatibility",
+              "performance/monitoring"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Async Endpoints",
+            "pages": [
+              "api/scrape-followers",
+              "api/job-status",
+              "api/job-results"
+            ]
+          },
+          {
+            "group": "Data Ingestion",
+            "pages": [
+              "api/ingest",
+              "api/daily-selection"
+            ]
+          },
+          {
+            "group": "Airtable Operations",
+            "pages": [
+              "api/airtable-sync",
+              "api/distribute",
+              "api/sync-statuses"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "api/health-check",
+              "api/run-daily"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Advanced",
+        "groups": [
+          {
+            "group": "Workers & Tasks",
+            "pages": [
+              "advanced/celery-configuration",
+              "advanced/task-queues",
+              "advanced/worker-management"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "advanced/scraper-utils",
+              "advanced/gender-detection",
+              "advanced/batch-processor"
+            ]
+          },
+          {
+            "group": "Troubleshooting",
+            "pages": [
+              "troubleshooting/common-issues",
+              "troubleshooting/debugging",
+              "troubleshooting/error-tracking"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Asynchronous task processing with Celery and Redis",
+    "Multi-platform scraping (Instagram, TikTok, Threads, X)",
+    "Bulk database operations with 1000x performance improvement",
+    "Real-time job tracking and progress monitoring",
+    "Batch processing of 1000 profiles per insert",
+    "Gender detection and filtering",
+    "Airtable integration for campaign management",
+    "Production-ready with Sentry error tracking and rate limiting",
+    "Supabase free tier compatible with connection pooling",
+    "Scalable to 1M accounts per month"
+  ],
+  "publicApiSurface": [
+    "POST /api/scrape-followers",
+    "GET /api/job-status/<job_id>",
+    "GET /api/job-results/<job_id>",
+    "POST /api/ingest",
+    "POST /api/daily-selection",
+    "POST /api/distribute/<campaign_id>",
+    "POST /api/airtable-sync/<campaign_id>",
+    "POST /api/sync-airtable-statuses",
+    "POST /api/run-daily",
+    "GET /health",
+    "scrape_followers()",
+    "detect_gender()",
+    "filter_by_gender()",
+    "batch_insert_profiles()",
+    "batch_update_assignments()",
+    "scrape_account_batch",
+    "aggregate_scrape_results",
+    "ingest_profiles_batch",
+    "daily_pipeline_orchestrator"
+  ]
+}
